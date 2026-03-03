@@ -1,0 +1,233 @@
+---
+title: "Installation"
+description: "Install and set up Pion Interceptor in your Go project"
+---
+
+# Installation
+
+Get started with Pion Interceptor by adding it to your Go project. The library requires Go 1.24.0 or later.
+
+## Prerequisites
+
+<Steps>
+  <Step title="Install Go">
+    Ensure you have Go 1.24.0 or later installed:
+    
+    ```bash
+    go version
+    ```
+    
+    If you need to install or upgrade Go, visit [go.dev/doc/install](https://go.dev/doc/install)
+  </Step>
+  
+  <Step title="Initialize Your Module">
+    If you haven't already, create a new Go module:
+    
+    ```bash
+    mkdir my-rtc-app
+    cd my-rtc-app
+    go mod init github.com/yourusername/my-rtc-app
+    ```
+  </Step>
+</Steps>
+
+## Install Pion Interceptor
+
+Add the Pion Interceptor library to your project:
+
+```bash
+go get github.com/pion/interceptor
+```
+
+This will add the latest version of the library to your `go.mod` file.
+
+<Info>
+The `go get` command will automatically download the library and its dependencies, including:
+- `github.com/pion/rtcp` - RTCP packet types
+- `github.com/pion/rtp` - RTP packet types
+- `github.com/pion/logging` - Logging utilities
+- `github.com/pion/transport` - Network transport utilities
+</Info>
+
+## Install Built-in Interceptors
+
+Pion Interceptor includes several production-ready interceptors. To use them, install the specific packages you need:
+
+<CodeGroup>
+```bash NACK (Retransmission)
+go get github.com/pion/interceptor/pkg/nack
+```
+
+```bash Sender/Receiver Reports
+go get github.com/pion/interceptor/pkg/report
+```
+
+```bash Transport-Wide CC
+go get github.com/pion/interceptor/pkg/twcc
+```
+
+```bash Google Congestion Control
+go get github.com/pion/interceptor/pkg/gcc
+```
+
+```bash Statistics
+go get github.com/pion/interceptor/pkg/stats
+```
+
+```bash FlexFEC
+go get github.com/pion/interceptor/pkg/flexfec
+```
+
+```bash Packet Dump (Debug)
+go get github.com/pion/interceptor/pkg/packetdump
+```
+
+```bash Interval PLI
+go get github.com/pion/interceptor/pkg/intervalpli
+```
+</CodeGroup>
+
+<Note>
+You only need to install the specific interceptor packages you plan to use. The base `interceptor` package is always required.
+</Note>
+
+## Verify Installation
+
+Create a simple test file to verify your installation:
+
+```go main.go
+package main
+
+import (
+    "fmt"
+    "github.com/pion/interceptor"
+)
+
+func main() {
+    // Create a NoOp interceptor
+    i := &interceptor.NoOp{}
+    
+    // Create a chain with the interceptor
+    chain := interceptor.NewChain([]interceptor.Interceptor{i})
+    
+    fmt.Println("Pion Interceptor installed successfully!")
+    
+    // Clean up
+    chain.Close()
+}
+```
+
+Run the test:
+
+```bash
+go run main.go
+```
+
+You should see:
+```
+Pion Interceptor installed successfully!
+```
+
+## Project Structure
+
+A typical project using Pion Interceptor might look like:
+
+```
+my-rtc-app/
+├── go.mod
+├── go.sum
+├── main.go
+└── interceptors/
+    ├── custom.go      # Your custom interceptors
+    └── custom_test.go # Tests for your interceptors
+```
+
+## Update to Latest Version
+
+To update to the latest version of Pion Interceptor:
+
+```bash
+go get -u github.com/pion/interceptor
+go mod tidy
+```
+
+<Warning>
+Always test your application after updating dependencies, as new versions may include breaking changes.
+</Warning>
+
+## Using with Pion WebRTC
+
+If you're using Pion Interceptor with Pion WebRTC, install both libraries:
+
+```bash
+go get github.com/pion/webrtc/v4
+go get github.com/pion/interceptor
+```
+
+Pion WebRTC v3.0.0+ has built-in support for interceptors:
+
+```go
+import (
+    "github.com/pion/webrtc/v4"
+    "github.com/pion/interceptor"
+    "github.com/pion/interceptor/pkg/nack"
+)
+
+func main() {
+    // Create a MediaEngine
+    m := &webrtc.MediaEngine{}
+    
+    // Create an InterceptorRegistry
+    i := &interceptor.Registry{}
+    
+    // Add a NACK interceptor
+    nackFactory, _ := nack.NewGeneratorInterceptor()
+    i.Add(nackFactory)
+    
+    // Create the API with the MediaEngine and InterceptorRegistry
+    api := webrtc.NewAPI(
+        webrtc.WithMediaEngine(m),
+        webrtc.WithInterceptorRegistry(i),
+    )
+    
+    // Use the API to create PeerConnections
+    // ...
+}
+```
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Module not found error">
+    If you see `module not found` errors, ensure you're using Go modules:
+    
+    ```bash
+    export GO111MODULE=on
+    go mod download
+    ```
+  </Accordion>
+  
+  <Accordion title="Version conflicts">
+    If you encounter version conflicts, try cleaning your module cache:
+    
+    ```bash
+    go clean -modcache
+    go mod download
+    ```
+  </Accordion>
+  
+  <Accordion title="Import errors">
+    Make sure you're importing the correct package path:
+    
+    ```go
+    import "github.com/pion/interceptor"
+    // NOT github.com/pion/interceptor/v2 or other paths
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<Card title="Quick Start Guide" icon="rocket" href="/quickstart">
+  Now that you have Pion Interceptor installed, follow the quick start guide to build your first working example.
+</Card>

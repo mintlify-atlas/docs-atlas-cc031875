@@ -1,0 +1,342 @@
+---
+title: Creating Custom Interceptors
+description: Learn how to build custom interceptors for the Pion Interceptor library
+---
+
+## Overview
+
+Custom interceptors allow you to modify RTP and RTCP packets in your WebRTC pipeline. By implementing the `Interceptor` interface, you can add custom logic for packet inspection, modification, statistics collection, or any other processing needs.
+
+## The Interceptor Interface
+
+All interceptors must implement the `Interceptor` interface, which consists of seven methods:
+
+```go
+type Interceptor interface {
+    // BindRTCPReader lets you modify any incoming RTCP packets
+    BindRTCPReader(reader RTCPReader) RTCPReader
+
+    // BindRTCPWriter lets you modify any outgoing RTCP packets
+    BindRTCPWriter(writer RTCPWriter) RTCPWriter
+
+    // BindLocalStream lets you modify any outgoing RTP packets
+    BindLocalStream(info *StreamInfo, writer RTPWriter) RTPWriter
+
+    // UnbindLocalStream is called when the local stream is removed
+    UnbindLocalStream(info *StreamInfo)
+
+    // BindRemoteStream lets you modify any incoming RTP packets
+    BindRemoteStream(info *StreamInfo, reader RTPReader) RTPReader
+
+    // UnbindRemoteStream is called when the remote stream is removed
+    UnbindRemoteStream(info *StreamInfo)
+
+    // Close closes the Interceptor, cleaning up any data
+    io.Closer
+}
+```
+
+## Starting with NoOp
+
+The easiest way to create a custom interceptor is to embed the `NoOp` interceptor and override only the methods you need. The `NoOp` interceptor provides default implementations that pass packets through unchanged.
+
+<Tip>
+Embedding `NoOp` is the recommended approach - you only need to implement the specific methods relevant to your use case.
+</Tip>
+
+### Basic NoOp Implementation
+
+Here's the complete `NoOp` interceptor from `noop.go:1`:
+
+```go
+type NoOp struct{}
+
+func (i *NoOp) BindRTCPReader(reader RTCPReader) RTCPReader {
+    return reader
+}
+
+func (i *NoOp) BindRTCPWriter(writer RTCPWriter) RTCPWriter {
+    return writer
+}
+
+func (i *NoOp) BindLocalStream(_ *StreamInfo, writer RTPWriter) RTPWriter {
+    return writer
+}
+
+func (i *NoOp) UnbindLocalStream(_ *StreamInfo) {}
+
+func (i *NoOp) BindRemoteStream(_ *StreamInfo, reader RTPReader) RTPReader {
+    return reader
+}
+
+func (i *NoOp) UnbindRemoteStream(_ *StreamInfo) {}
+
+func (i *NoOp) Close() error {
+    return nil
+}
+```
+
+## Creating a Simple Interceptor
+
+Let's create a simple packet counter interceptor that tracks RTP packets:
+
+```go
+package main
+
+import (
+    "sync/atomic"
+    "github.com/pion/interceptor"
+    "github.com/pion/rtp"
+)
+
+// PacketCounterInterceptor counts RTP packets
+type PacketCounterInterceptor struct {
+    interceptor.NoOp
+    packetsReceived atomic.Uint64
+    packetsSent     atomic.Uint64
+}
+
+// BindLocalStream intercepts outgoing RTP packets
+func (p *PacketCounterInterceptor) BindLocalStream(
+    info *interceptor.StreamInfo,
+    writer interceptor.RTPWriter,
+) interceptor.RTPWriter {
+    return interceptor.RTPWriterFunc(
+        func(header *rtp.Header, payload []byte, attributes interceptor.Attributes) (int, error) {
+            p.packetsSent.Add(1)
+            return writer.Write(header, payload, attributes)
+        },
+    )
+}
+
+// BindRemoteStream intercepts incoming RTP packets
+func (p *PacketCounterInterceptor) BindRemoteStream(
+    info *interceptor.StreamInfo,
+    reader interceptor.RTPReader,
+) interceptor.RTPReader {
+    return interceptor.RTPReaderFunc(
+        func(b []byte, a interceptor.Attributes) (int, interceptor.Attributes, error) {
+            i, attr, err := reader.Read(b, a)
+            if err == nil {
+                p.packetsReceived.Add(1)
+            }
+            return i, attr, err
+        },
+    )
+}
+
+// GetStats returns packet statistics
+func (p *PacketCounterInterceptor) GetStats() (sent, received uint64) {
+    return p.packetsSent.Load(), p.packetsReceived.Load()
+}
+```
+
+## Working with StreamInfo
+
+The `StreamInfo` parameter provides context about the stream:
+
+```go
+type StreamInfo struct {
+    ID                  string
+    SSRC                uint32
+    PayloadType         uint8
+    MimeType            string
+    ClockRate           uint32
+    Channels            uint16
+    RTPHeaderExtensions []RTPHeaderExtension
+    RTCPFeedback        []RTCPFeedback
+    // ... and more fields
+}
+```
+
+<Info>
+Use `StreamInfo` to filter streams by SSRC, check for specific RTCP feedback types, or make decisions based on codec information.
+</Info>
+
+## Using Attributes
+
+Attributes provide a way to pass metadata between interceptors:
+
+```go
+// Store custom data in attributes
+attr := make(interceptor.Attributes)
+attr.Set("myKey", myValue)
+
+// Retrieve RTP header from attributes (cached)
+header, err := attr.GetRTPHeader(b)
+if err != nil {
+    return 0, nil, err
+}
+
+// Retrieve RTCP packets from attributes (cached)
+pkts, err := attr.GetRTCPPackets(b)
+if err != nil {
+    return 0, nil, err
+}
+```
+
+<Warning>
+Attributes are shared between interceptors in the chain. The `GetRTPHeader` and `GetRTCPPackets` methods cache unmarshaled data to improve performance.
+</Warning>
+
+## Interceptor with State Management
+
+For more complex interceptors that maintain state per stream:
+
+```go
+type StatefulInterceptor struct {
+    interceptor.NoOp
+    streams   map[uint32]*StreamState
+    streamsMu sync.RWMutex
+}
+
+type StreamState struct {
+    ssrc          uint32
+    packetsCount  uint64
+    lastTimestamp uint32
+}
+
+func (s *StatefulInterceptor) BindRemoteStream(
+    info *interceptor.StreamInfo,
+    reader interceptor.RTPReader,
+) interceptor.RTPReader {
+    // Initialize state for this stream
+    s.streamsMu.Lock()
+    s.streams[info.SSRC] = &StreamState{ssrc: info.SSRC}
+    s.streamsMu.Unlock()
+
+    return interceptor.RTPReaderFunc(
+        func(b []byte, a interceptor.Attributes) (int, interceptor.Attributes, error) {
+            i, attr, err := reader.Read(b, a)
+            if err != nil {
+                return 0, nil, err
+            }
+
+            if attr == nil {
+                attr = make(interceptor.Attributes)
+            }
+
+            header, err := attr.GetRTPHeader(b[:i])
+            if err != nil {
+                return 0, nil, err
+            }
+
+            // Update state
+            s.streamsMu.RLock()
+            if state, ok := s.streams[header.SSRC]; ok {
+                state.packetsCount++
+                state.lastTimestamp = header.Timestamp
+            }
+            s.streamsMu.RUnlock()
+
+            return i, attr, nil
+        },
+    )
+}
+
+// UnbindRemoteStream cleans up state when stream ends
+func (s *StatefulInterceptor) UnbindRemoteStream(info *interceptor.StreamInfo) {
+    s.streamsMu.Lock()
+    delete(s.streams, info.SSRC)
+    s.streamsMu.Unlock()
+}
+```
+
+<Tip>
+Always clean up resources in `UnbindLocalStream`, `UnbindRemoteStream`, and `Close` methods to prevent memory leaks.
+</Tip>
+
+## Factory Pattern
+
+Most interceptors use the Factory pattern for configuration:
+
+```go
+type MyInterceptorFactory struct {
+    opts []MyOption
+}
+
+type MyOption func(*MyInterceptor) error
+
+// WithInterval sets the interval option
+func WithInterval(interval time.Duration) MyOption {
+    return func(i *MyInterceptor) error {
+        i.interval = interval
+        return nil
+    }
+}
+
+// NewMyInterceptor creates a new factory
+func NewMyInterceptor(opts ...MyOption) (*MyInterceptorFactory, error) {
+    return &MyInterceptorFactory{opts: opts}, nil
+}
+
+// NewInterceptor implements interceptor.Factory
+func (f *MyInterceptorFactory) NewInterceptor(id string) (interceptor.Interceptor, error) {
+    i := &MyInterceptor{
+        interval: 1 * time.Second, // default
+    }
+
+    // Apply options
+    for _, opt := range f.opts {
+        if err := opt(i); err != nil {
+            return nil, err
+        }
+    }
+
+    return i, nil
+}
+```
+
+## Complete Example: Packet Logger
+
+Here's a complete example that logs packet information:
+
+```go
+package main
+
+import (
+    "log"
+    "github.com/pion/interceptor"
+    "github.com/pion/rtp"
+)
+
+type LoggingInterceptor struct {
+    interceptor.NoOp
+    prefix string
+}
+
+func NewLoggingInterceptor(prefix string) *LoggingInterceptor {
+    return &LoggingInterceptor{prefix: prefix}
+}
+
+func (l *LoggingInterceptor) BindLocalStream(
+    info *interceptor.StreamInfo,
+    writer interceptor.RTPWriter,
+) interceptor.RTPWriter {
+    log.Printf("%s: Bound local stream SSRC=%d, PayloadType=%d",
+        l.prefix, info.SSRC, info.PayloadType)
+
+    return interceptor.RTPWriterFunc(
+        func(header *rtp.Header, payload []byte, attributes interceptor.Attributes) (int, error) {
+            log.Printf("%s: Sending RTP packet: SSRC=%d, Seq=%d, TS=%d, Size=%d",
+                l.prefix, header.SSRC, header.SequenceNumber, header.Timestamp, len(payload))
+            return writer.Write(header, payload, attributes)
+        },
+    )
+}
+
+func (l *LoggingInterceptor) UnbindLocalStream(info *interceptor.StreamInfo) {
+    log.Printf("%s: Unbound local stream SSRC=%d", l.prefix, info.SSRC)
+}
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Examples" icon="code" href="/advanced/examples">
+    See real-world interceptor implementations
+  </Card>
+  <Card title="Best Practices" icon="star" href="/advanced/best-practices">
+    Learn patterns and practices for robust interceptors
+  </Card>
+</CardGroup>

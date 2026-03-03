@@ -1,0 +1,220 @@
+---
+title: "NoOp"
+description: "Base interceptor implementation that passes through all packets unchanged"
+---
+
+The `NoOp` type is an interceptor that does not modify any packets. It can be embedded in other interceptors, making it possible to implement only a subset of the Interceptor interface methods.
+
+## Type Definition
+
+```go
+type NoOp struct{}
+```
+
+## Methods
+
+All methods implement the `Interceptor` interface but simply pass through without modification.
+
+### BindRTCPReader
+
+```go
+func (i *NoOp) BindRTCPReader(reader RTCPReader) RTCPReader
+```
+
+Returns the reader unchanged.
+
+### BindRTCPWriter
+
+```go
+func (i *NoOp) BindRTCPWriter(writer RTCPWriter) RTCPWriter
+```
+
+Returns the writer unchanged.
+
+### BindLocalStream
+
+```go
+func (i *NoOp) BindLocalStream(_ *StreamInfo, writer RTPWriter) RTPWriter
+```
+
+Returns the writer unchanged.
+
+### UnbindLocalStream
+
+```go
+func (i *NoOp) UnbindLocalStream(_ *StreamInfo)
+```
+
+Does nothing.
+
+### BindRemoteStream
+
+```go
+func (i *NoOp) BindRemoteStream(_ *StreamInfo, reader RTPReader) RTPReader
+```
+
+Returns the reader unchanged.
+
+### UnbindRemoteStream
+
+```go
+func (i *NoOp) UnbindRemoteStream(_ *StreamInfo)
+```
+
+Does nothing.
+
+### Close
+
+```go
+func (i *NoOp) Close() error
+```
+
+Returns nil.
+
+## Usage: Embedding in Custom Interceptors
+
+The primary use of `NoOp` is to embed it in custom interceptors so you only need to implement the methods you care about:
+
+```go
+import (
+    "fmt"
+    "github.com/pion/interceptor"
+    "github.com/pion/rtp"
+)
+
+// CustomInterceptor only cares about incoming RTP packets
+type CustomInterceptor struct {
+    interceptor.NoOp  // Embed NoOp for default implementations
+    packetCount int
+}
+
+// Override only the method we care about
+func (c *CustomInterceptor) BindRemoteStream(
+    info *interceptor.StreamInfo,
+    reader interceptor.RTPReader,
+) interceptor.RTPReader {
+    return interceptor.RTPReaderFunc(func(b []byte, a interceptor.Attributes) (int, interceptor.Attributes, error) {
+        n, attr, err := reader.Read(b, a)
+        if err != nil {
+            return 0, nil, err
+        }
+        
+        c.packetCount++
+        fmt.Printf("Received packet #%d\n", c.packetCount)
+        
+        return n, attr, nil
+    })
+}
+
+// All other Interceptor methods are inherited from NoOp
+```
+
+## Example: Selective Implementation
+
+```go
+// LoggingInterceptor logs both incoming and outgoing RTP
+type LoggingInterceptor struct {
+    interceptor.NoOp
+    logger *log.Logger
+}
+
+func (l *LoggingInterceptor) BindLocalStream(
+    info *interceptor.StreamInfo,
+    writer interceptor.RTPWriter,
+) interceptor.RTPWriter {
+    return interceptor.RTPWriterFunc(
+        func(header *rtp.Header, payload []byte, attributes interceptor.Attributes) (int, error) {
+            l.logger.Printf("Sending RTP packet, SSRC=%d, SeqNum=%d", 
+                header.SSRC, header.SequenceNumber)
+            return writer.Write(header, payload, attributes)
+        },
+    )
+}
+
+func (l *LoggingInterceptor) BindRemoteStream(
+    info *interceptor.StreamInfo,
+    reader interceptor.RTPReader,
+) interceptor.RTPReader {
+    return interceptor.RTPReaderFunc(func(b []byte, a interceptor.Attributes) (int, interceptor.Attributes, error) {
+        n, attr, err := reader.Read(b, a)
+        if err != nil {
+            return 0, nil, err
+        }
+        
+        if attr == nil {
+            attr = make(interceptor.Attributes)
+        }
+        header, _ := attr.GetRTPHeader(b[:n])
+        l.logger.Printf("Received RTP packet, SSRC=%d, SeqNum=%d",
+            header.SSRC, header.SequenceNumber)
+        
+        return n, attr, nil
+    })
+}
+
+// RTCP methods, unbind methods, and Close are all inherited from NoOp
+```
+
+## Example: Minimal Interceptor with Cleanup
+
+```go
+type ResourceInterceptor struct {
+    interceptor.NoOp
+    resources map[uint32]*Resource
+    mu        sync.Mutex
+}
+
+func (r *ResourceInterceptor) BindLocalStream(
+    info *interceptor.StreamInfo,
+    writer interceptor.RTPWriter,
+) interceptor.RTPWriter {
+    r.mu.Lock()
+    r.resources[info.SSRC] = NewResource()
+    r.mu.Unlock()
+    return writer  // Don't modify packets
+}
+
+func (r *ResourceInterceptor) UnbindLocalStream(info *interceptor.StreamInfo) {
+    r.mu.Lock()
+    if res, ok := r.resources[info.SSRC]; ok {
+        res.Close()
+        delete(r.resources, info.SSRC)
+    }
+    r.mu.Unlock()
+}
+
+func (r *ResourceInterceptor) Close() error {
+    r.mu.Lock()
+    defer r.mu.Unlock()
+    
+    for _, res := range r.resources {
+        res.Close()
+    }
+    r.resources = nil
+    return nil
+}
+
+// All other methods inherited from NoOp
+```
+
+## When to Use NoOp
+
+**Use `NoOp` when:**
+- You only need to implement 1-2 methods of the Interceptor interface
+- You want to avoid boilerplate code
+- You're creating a simple, focused interceptor
+
+**Don't use `NoOp` when:**
+- You need to implement most/all Interceptor methods
+- You want explicit control over all methods
+- You're building a complex interceptor with state
+
+## See Also
+
+- [Interceptor](/api/interceptor) - The interface NoOp implements
+- [Factory](/api/factory) - Creating interceptor instances
+- [Chain](/api/chain) - Combining interceptors
+
+## Reference
+
+For more details, see the [pkg.go.dev documentation](https://pkg.go.dev/github.com/pion/interceptor#NoOp).

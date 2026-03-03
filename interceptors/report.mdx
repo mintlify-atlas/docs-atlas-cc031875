@@ -1,0 +1,398 @@
+---
+title: Report Interceptors
+description: Generate RTCP sender and receiver reports for stream statistics
+---
+
+The Report interceptors generate standard RTCP Sender Reports (SR) and Receiver Reports (RR) that provide statistics about RTP stream quality and synchronization.
+
+## Overview
+
+Report interceptors provide:
+
+- **Sender Reports (SR)**: Statistics about outgoing streams (packet count, byte count, timestamps)
+- **Receiver Reports (RR)**: Statistics about incoming streams (packet loss, jitter, delay)
+- **Synchronization**: NTP timestamps for media synchronization
+- **Periodic feedback**: Automatic report generation at configurable intervals
+
+## Sender Interceptor
+
+Generates RTCP Sender Reports for outgoing RTP streams.
+
+### Basic Usage
+
+```go
+import (
+    "time"
+    "github.com/pion/interceptor"
+    "github.com/pion/interceptor/pkg/report"
+)
+
+// Create sender interceptor
+senderFactory, err := report.NewSenderInterceptor(
+    report.SenderInterval(1 * time.Second),
+)
+if err != nil {
+    panic(err)
+}
+
+// Register with interceptor registry
+m := &interceptor.Registry{}
+m.Add(senderFactory)
+```
+
+### Configuration Options
+
+<Accordion title="SenderInterval">
+Sets how often to send sender reports.
+
+```go
+senderFactory, err := report.NewSenderInterceptor(
+    report.SenderInterval(1 * time.Second), // Default: 1 second
+)
+```
+</Accordion>
+
+<Accordion title="SenderUseLatestPacket">
+Uses the latest packet for timestamp calculations, even if it appears out of order.
+
+```go
+senderFactory, err := report.NewSenderInterceptor(
+    report.SenderUseLatestPacket(),
+)
+```
+</Accordion>
+
+<Accordion title="SenderLog / WithSenderLoggerFactory">
+Configure logging for debugging.
+
+```go
+senderFactory, err := report.NewSenderInterceptor(
+    report.WithSenderLoggerFactory(loggerFactory),
+)
+```
+</Accordion>
+
+### Sender Report Contents
+
+Sender Reports include:
+
+```go
+type SenderReport struct {
+    // SSRC of the sender
+    SSRC uint32
+    
+    // NTP timestamp (wall clock time)
+    NTPTime uint64
+    
+    // RTP timestamp
+    RTPTime uint32
+    
+    // Sender's packet count
+    PacketCount uint32
+    
+    // Sender's byte count
+    OctetCount uint32
+}
+```
+
+## Receiver Interceptor
+
+Generates RTCP Receiver Reports for incoming RTP streams.
+
+### Basic Usage
+
+```go
+// Create receiver interceptor
+receiverFactory, err := report.NewReceiverInterceptor(
+    report.ReceiverInterval(1 * time.Second),
+)
+if err != nil {
+    panic(err)
+}
+
+m.Add(receiverFactory)
+```
+
+### Configuration Options
+
+<Accordion title="ReceiverInterval">
+Sets how often to send receiver reports.
+
+```go
+receiverFactory, err := report.NewReceiverInterceptor(
+    report.ReceiverInterval(1 * time.Second), // Default: 1 second
+)
+```
+</Accordion>
+
+<Accordion title="ReceiverLog / WithReceiverLoggerFactory">
+Configure logging for debugging.
+
+```go
+receiverFactory, err := report.NewReceiverInterceptor(
+    report.WithReceiverLoggerFactory(loggerFactory),
+)
+```
+</Accordion>
+
+### Receiver Report Contents
+
+Receiver Reports include:
+
+```go
+type ReceptionReport struct {
+    // SSRC of the source
+    SSRC uint32
+    
+    // Fraction of packets lost since last report (0-255)
+    FractionLost uint8
+    
+    // Total number of packets lost
+    TotalLost uint32
+    
+    // Highest sequence number received
+    LastSequenceNumber uint32
+    
+    // Interarrival jitter
+    Jitter uint32
+    
+    // Last SR timestamp
+    LastSenderReport uint32
+    
+    // Delay since last SR (in 1/65536 seconds)
+    Delay uint32
+}
+```
+
+## Complete Example
+
+```go
+package main
+
+import (
+    "log"
+    "time"
+    
+    "github.com/pion/interceptor"
+    "github.com/pion/interceptor/pkg/report"
+    "github.com/pion/logging"
+    "github.com/pion/webrtc/v4"
+)
+
+func main() {
+    // Create logger factory
+    loggerFactory := logging.NewDefaultLoggerFactory()
+    
+    // Create interceptor registry
+    i := &interceptor.Registry{}
+    
+    // Setup sender reports
+    senderFactory, err := report.NewSenderInterceptor(
+        report.SenderInterval(1 * time.Second),
+        report.WithSenderLoggerFactory(loggerFactory),
+    )
+    if err != nil {
+        panic(err)
+    }
+    i.Add(senderFactory)
+    
+    // Setup receiver reports
+    receiverFactory, err := report.NewReceiverInterceptor(
+        report.ReceiverInterval(1 * time.Second),
+        report.WithReceiverLoggerFactory(loggerFactory),
+    )
+    if err != nil {
+        panic(err)
+    }
+    i.Add(receiverFactory)
+    
+    // Create media engine and API
+    m := &webrtc.MediaEngine{}
+    if err := m.RegisterDefaultCodecs(); err != nil {
+        panic(err)
+    }
+    
+    api := webrtc.NewAPI(
+        webrtc.WithMediaEngine(m),
+        webrtc.WithInterceptorRegistry(i),
+    )
+    
+    // Create peer connection
+    peerConnection, err := api.NewPeerConnection(webrtc.Configuration{})
+    if err != nil {
+        panic(err)
+    }
+    defer peerConnection.Close()
+    
+    log.Println("Reports configured successfully")
+}
+```
+
+## How Reports Work
+
+### Sender Report Generation
+
+1. **Packet Tracking**: Monitors outgoing RTP packets
+2. **Statistics Collection**: Counts packets and bytes
+3. **Timestamp Mapping**: Records NTP to RTP timestamp correlation
+4. **Report Creation**: Generates SR with current statistics
+5. **Transmission**: Sends SR via RTCP at configured interval
+
+### Receiver Report Generation
+
+1. **Packet Monitoring**: Tracks incoming RTP packets
+2. **Loss Calculation**: Detects missing sequence numbers
+3. **Jitter Estimation**: Calculates interarrival jitter
+4. **SR Processing**: Records timestamps from received sender reports
+5. **RR Creation**: Generates receiver report with statistics
+6. **Transmission**: Sends RR via RTCP
+
+## Understanding Jitter
+
+Jitter represents the variance in packet arrival times:
+
+```go
+// Jitter calculation (simplified)
+delta := arrivalTime - expectedArrivalTime
+jitter := (15*jitter + abs(delta)) / 16  // EWMA with α=1/16
+```
+
+<Info>
+Lower jitter values indicate more consistent packet arrival times. High jitter can cause playback issues.
+</Info>
+
+## Using with Stats
+
+Combine with the Stats interceptor for more detailed metrics:
+
+```go
+import (
+    "github.com/pion/interceptor/pkg/report"
+    "github.com/pion/interceptor/pkg/stats"
+)
+
+// Add both report and stats interceptors
+reportFactory, _ := report.NewSenderInterceptor()
+i.Add(reportFactory)
+
+statsFactory, _ := stats.NewInterceptor()
+i.Add(statsFactory)
+
+// Reports provide standard RTCP feedback
+// Stats provide detailed stream metrics
+```
+
+## Monitoring Reports
+
+Process received reports to monitor stream quality:
+
+```go
+// Handle incoming RTCP packets
+peerConnection.OnRTCP(func(packets []rtcp.Packet) {
+    for _, pkt := range packets {
+        switch p := pkt.(type) {
+        case *rtcp.SenderReport:
+            log.Printf("Sender Report from SSRC %d:", p.SSRC)
+            log.Printf("  Packets: %d", p.PacketCount)
+            log.Printf("  Bytes: %d", p.OctetCount)
+            log.Printf("  NTP: %d, RTP: %d", p.NTPTime, p.RTPTime)
+            
+        case *rtcp.ReceiverReport:
+            for _, rr := range p.Reports {
+                log.Printf("Receiver Report for SSRC %d:", rr.SSRC)
+                log.Printf("  Lost: %d (%.2f%%)",
+                    rr.TotalLost,
+                    float64(rr.FractionLost)/256*100)
+                log.Printf("  Jitter: %d", rr.Jitter)
+            }
+        }
+    }
+})
+```
+
+## Calculating RTT
+
+Use SR and RR to calculate round-trip time:
+
+```go
+// When receiving RR with LastSenderReport (LSR) and Delay (DLSR)
+roundTripTime := currentNTPTime - LSR - DLSR
+
+// Convert to milliseconds
+rttMs := float64(roundTripTime) * 1000.0 / 65536.0
+```
+
+## Best Practices
+
+1. **Report Interval**: 1 second is standard, adjust based on network conditions
+2. **Compound RTCP**: Reports are often sent with other RTCP packets
+3. **Bandwidth Limits**: RTCP should use ~5% of session bandwidth
+4. **Monitor Regularly**: Check reports for quality issues
+5. **Synchronization**: Use NTP timestamps for A/V sync
+
+<Note>
+RTCP bandwidth is automatically managed by the WebRTC implementation to comply with RFC 3550.
+</Note>
+
+## Report Intervals
+
+### Standard Intervals
+
+```go
+// Voice calls - frequent reports
+report.SenderInterval(1 * time.Second)
+
+// Video conferencing - standard
+report.SenderInterval(1 * time.Second)
+
+// Broadcasting - less frequent
+report.SenderInterval(5 * time.Second)
+
+// Low bandwidth - reduced frequency
+report.SenderInterval(10 * time.Second)
+```
+
+### Dynamic Adjustment
+
+Adjust intervals based on conditions:
+
+```go
+// Monitor packet loss
+if packetLossRate > 0.05 {
+    // Increase report frequency during issues
+    senderFactory, _ = report.NewSenderInterceptor(
+        report.SenderInterval(500 * time.Millisecond),
+    )
+}
+```
+
+## Troubleshooting
+
+<Accordion title="Reports not being sent">
+Check:
+1. Interceptor is properly registered
+2. RTP packets are flowing
+3. RTCP is not blocked by firewall
+4. Report interval is not too long
+</Accordion>
+
+<Accordion title="Inaccurate jitter values">
+Ensure:
+1. Clock synchronization is working
+2. Timestamps are monotonic
+3. Network conditions are stable
+</Accordion>
+
+<Accordion title="High packet loss reported">
+Investigate:
+1. Network congestion
+2. Bandwidth constraints
+3. Packet reordering
+4. Firewall dropping packets
+</Accordion>
+
+## Related Interceptors
+
+- [Stats](/interceptors/stats) - More detailed stream statistics
+- [NACK](/interceptors/nack) - Request retransmission of lost packets
+- [TWCC](/interceptors/twcc) - Transport-wide congestion feedback

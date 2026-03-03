@@ -1,0 +1,295 @@
+---
+title: "StreamInfo"
+description: "Stream metadata passed when binding or unbinding RTP streams"
+---
+
+The `StreamInfo` type contains metadata about an RTP stream that is passed when a stream is bound or unbound from an interceptor.
+
+## Type Definition
+
+```go
+type StreamInfo struct {
+    ID                                string
+    Attributes                        Attributes
+    SSRC                              uint32
+    SSRCRetransmission                uint32
+    SSRCForwardErrorCorrection        uint32
+    PayloadType                       uint8
+    PayloadTypeRetransmission         uint8
+    PayloadTypeForwardErrorCorrection uint8
+    RTPHeaderExtensions               []RTPHeaderExtension
+    MimeType                          string
+    ClockRate                         uint32
+    Channels                          uint16
+    SDPFmtpLine                       string
+    RTCPFeedback                      []RTCPFeedback
+}
+```
+
+## Fields
+
+<ResponseField name="ID" type="string">
+  Unique identifier for the stream
+</ResponseField>
+
+<ResponseField name="Attributes" type="Attributes">
+  Generic key/value store for passing custom metadata
+</ResponseField>
+
+<ResponseField name="SSRC" type="uint32">
+  Synchronization Source identifier for the main RTP stream
+</ResponseField>
+
+<ResponseField name="SSRCRetransmission" type="uint32">
+  SSRC for retransmission packets (RTX), 0 if not configured
+</ResponseField>
+
+<ResponseField name="SSRCForwardErrorCorrection" type="uint32">
+  SSRC for forward error correction packets (FEC), 0 if not configured
+</ResponseField>
+
+<ResponseField name="PayloadType" type="uint8">
+  RTP payload type for the main stream
+</ResponseField>
+
+<ResponseField name="PayloadTypeRetransmission" type="uint8">
+  RTP payload type for retransmission packets, 0 if not configured
+</ResponseField>
+
+<ResponseField name="PayloadTypeForwardErrorCorrection" type="uint8">
+  RTP payload type for FEC packets, 0 if not configured
+</ResponseField>
+
+<ResponseField name="RTPHeaderExtensions" type="[]RTPHeaderExtension">
+  Negotiated RTP header extensions for this stream
+</ResponseField>
+
+<ResponseField name="MimeType" type="string">
+  Media type (e.g., "audio/opus", "video/VP8")
+</ResponseField>
+
+<ResponseField name="ClockRate" type="uint32">
+  RTP timestamp clock rate in Hz (e.g., 48000 for Opus, 90000 for video)
+</ResponseField>
+
+<ResponseField name="Channels" type="uint16">
+  Number of audio channels (typically 1 or 2), 0 for video
+</ResponseField>
+
+<ResponseField name="SDPFmtpLine" type="string">
+  Format-specific parameters from SDP
+</ResponseField>
+
+<ResponseField name="RTCPFeedback" type="[]RTCPFeedback">
+  Negotiated RTCP feedback mechanisms
+</ResponseField>
+
+## RTPHeaderExtension
+
+```go
+type RTPHeaderExtension struct {
+    URI string
+    ID  int
+}
+```
+
+<ResponseField name="URI" type="string">
+  Extension URI (e.g., "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01")
+</ResponseField>
+
+<ResponseField name="ID" type="int">
+  Negotiated extension ID (1-14 for one-byte, 1-255 for two-byte)
+</ResponseField>
+
+## RTCPFeedback
+
+```go
+type RTCPFeedback struct {
+    Type      string
+    Parameter string
+}
+```
+
+<ResponseField name="Type" type="string">
+  Feedback type: "ack", "ccm", "nack", "goog-remb", "transport-cc"
+</ResponseField>
+
+<ResponseField name="Parameter" type="string">
+  Type-specific parameter (e.g., "pli" for type="nack" sends Picture Loss Indication)
+</ResponseField>
+
+## Usage Examples
+
+### Checking for Header Extensions
+
+```go
+import "github.com/pion/interceptor"
+
+const transportCCURI = "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01"
+
+func (i *MyInterceptor) BindLocalStream(
+    info *interceptor.StreamInfo,
+    writer interceptor.RTPWriter,
+) interceptor.RTPWriter {
+    // Check if transport-cc is enabled
+    var twccID uint8
+    for _, ext := range info.RTPHeaderExtensions {
+        if ext.URI == transportCCURI {
+            twccID = uint8(ext.ID)
+            break
+        }
+    }
+    
+    if twccID == 0 {
+        // Transport-cc not enabled, return writer unchanged
+        return writer
+    }
+    
+    // Use twccID to read/write transport sequence numbers
+    // ...
+}
+```
+
+### Using RTCP Feedback Info
+
+```go
+func (i *NACKInterceptor) BindRemoteStream(
+    info *interceptor.StreamInfo,
+    reader interceptor.RTPReader,
+) interceptor.RTPReader {
+    // Check if NACK is supported
+    supportsNACK := false
+    for _, fb := range info.RTCPFeedback {
+        if fb.Type == "nack" {
+            supportsNACK = true
+            break
+        }
+    }
+    
+    if !supportsNACK {
+        return reader
+    }
+    
+    // Enable NACK handling
+    // ...
+}
+```
+
+### Accessing Clock Rate
+
+```go
+func (i *JitterCalculator) BindRemoteStream(
+    info *interceptor.StreamInfo,
+    reader interceptor.RTPReader,
+) interceptor.RTPReader {
+    clockRate := float64(info.ClockRate)
+    
+    return interceptor.RTPReaderFunc(func(b []byte, a interceptor.Attributes) (int, interceptor.Attributes, error) {
+        n, attr, err := reader.Read(b, a)
+        if err != nil {
+            return 0, nil, err
+        }
+        
+        if attr == nil {
+            attr = make(interceptor.Attributes)
+        }
+        header, _ := attr.GetRTPHeader(b[:n])
+        
+        // Convert RTP timestamp units to seconds
+        timestampSeconds := float64(header.Timestamp) / clockRate
+        
+        return n, attr, nil
+    })
+}
+```
+
+### Stream Type Detection
+
+```go
+func getStreamType(info *interceptor.StreamInfo) string {
+    if strings.HasPrefix(info.MimeType, "audio/") {
+        return "audio"
+    }
+    if strings.HasPrefix(info.MimeType, "video/") {
+        return "video"
+    }
+    return "unknown"
+}
+
+func (i *TypeAwareInterceptor) BindLocalStream(
+    info *interceptor.StreamInfo,
+    writer interceptor.RTPWriter,
+) interceptor.RTPWriter {
+    streamType := getStreamType(info)
+    
+    switch streamType {
+    case "audio":
+        // Apply audio-specific processing
+        return i.wrapAudioStream(info, writer)
+    case "video":
+        // Apply video-specific processing
+        return i.wrapVideoStream(info, writer)
+    default:
+        return writer
+    }
+}
+```
+
+### Using Custom Attributes
+
+```go
+type customKey int
+const myDataKey customKey = 0
+
+func (i *MyInterceptor) BindLocalStream(
+    info *interceptor.StreamInfo,
+    writer interceptor.RTPWriter,
+) interceptor.RTPWriter {
+    // Store custom data in StreamInfo.Attributes
+    info.Attributes.Set(myDataKey, &MyStreamData{
+        Created: time.Now(),
+        Counter: 0,
+    })
+    
+    return interceptor.RTPWriterFunc(
+        func(header *rtp.Header, payload []byte, attributes interceptor.Attributes) (int, error) {
+            // Retrieve custom data
+            if data, ok := info.Attributes.Get(myDataKey).(*MyStreamData); ok {
+                data.Counter++
+            }
+            
+            return writer.Write(header, payload, attributes)
+        },
+    )
+}
+
+func (i *MyInterceptor) UnbindLocalStream(info *interceptor.StreamInfo) {
+    // Clean up custom data
+    if data, ok := info.Attributes.Get(myDataKey).(*MyStreamData); ok {
+        fmt.Printf("Stream processed %d packets\n", data.Counter)
+    }
+}
+```
+
+## Common RTCP Feedback Types
+
+| Type | Parameter | Description |
+|------|-----------|-------------|
+| `nack` | `""` | Generic NACK |
+| `nack` | `"pli"` | Picture Loss Indication |
+| `nack` | `"sli"` | Slice Loss Indication |
+| `nack` | `"rpsi"` | Reference Picture Selection Indication |
+| `ccm` | `"fir"` | Full Intra Request |
+| `ccm` | `"tmmbr"` | Temporary Maximum Media Bit Rate Request |
+| `ack` | `"rpsi"` | Acknowledgment RPSI |
+| `transport-cc` | `""` | Transport-wide Congestion Control |
+| `goog-remb` | `""` | Google REMB |
+
+## See Also
+
+- [Interceptor](/api/interceptor) - Uses StreamInfo in bind methods
+- [Attributes](/api/attributes) - Generic key/value store
+
+## Reference
+
+For more details, see the [pkg.go.dev documentation](https://pkg.go.dev/github.com/pion/interceptor#StreamInfo).

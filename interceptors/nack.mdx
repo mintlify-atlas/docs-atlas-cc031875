@@ -1,0 +1,236 @@
+---
+title: NACK Interceptor
+description: Request and respond to negative acknowledgments for packet retransmission
+---
+
+The NACK (Negative Acknowledgment) interceptor provides reliable packet delivery by detecting missing packets and requesting retransmission. It consists of two components:
+
+- **Generator**: Detects missing packets and sends NACK requests
+- **Responder**: Buffers sent packets and resends them when NACKed
+
+## Generator Interceptor
+
+The generator monitors incoming RTP streams and sends NACK feedback for missing sequence numbers.
+
+### Basic Usage
+
+```go
+import (
+    "github.com/pion/interceptor"
+    "github.com/pion/interceptor/pkg/nack"
+)
+
+// Create NACK generator
+generatorFactory, err := nack.NewGeneratorInterceptor()
+if err != nil {
+    panic(err)
+}
+
+// Register with interceptor registry
+m := &interceptor.Registry{}
+m.Add(generatorFactory)
+```
+
+### Configuration Options
+
+<Accordion title="GeneratorSize">
+Sets the buffer size for tracking sequence numbers. Must be a power of 2.
+
+```go
+generatorFactory, err := nack.NewGeneratorInterceptor(
+    nack.GeneratorSize(1024), // Default: 512
+)
+```
+
+**Valid sizes**: 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768
+</Accordion>
+
+<Accordion title="GeneratorInterval">
+Sets how often to check for missing packets and send NACKs.
+
+```go
+generatorFactory, err := nack.NewGeneratorInterceptor(
+    nack.GeneratorInterval(100 * time.Millisecond), // Default: 100ms
+)
+```
+</Accordion>
+
+<Accordion title="GeneratorSkipLastN">
+Ignores the last N packets when generating NACKs to avoid requesting packets that may still be in flight.
+
+```go
+generatorFactory, err := nack.NewGeneratorInterceptor(
+    nack.GeneratorSkipLastN(2), // Skip last 2 packets
+)
+```
+</Accordion>
+
+<Accordion title="GeneratorMaxNacksPerPacket">
+Limits how many times a packet will be NACKed. Set to 0 for unlimited.
+
+```go
+generatorFactory, err := nack.NewGeneratorInterceptor(
+    nack.GeneratorMaxNacksPerPacket(3), // NACK each packet max 3 times
+)
+```
+</Accordion>
+
+<Accordion title="GeneratorStreamsFilter">
+Filter which streams should generate NACKs.
+
+```go
+generatorFactory, err := nack.NewGeneratorInterceptor(
+    nack.GeneratorStreamsFilter(func(info *interceptor.StreamInfo) bool {
+        // Only generate NACKs for video streams
+        return info.MimeType == "video/vp8"
+    }),
+)
+```
+</Accordion>
+
+### Complete Example
+
+```go
+generatorFactory, err := nack.NewGeneratorInterceptor(
+    nack.GeneratorSize(1024),
+    nack.GeneratorInterval(100 * time.Millisecond),
+    nack.GeneratorSkipLastN(1),
+    nack.GeneratorMaxNacksPerPacket(3),
+    nack.WithGeneratorLoggerFactory(loggerFactory),
+)
+if err != nil {
+    panic(err)
+}
+```
+
+## Responder Interceptor
+
+The responder buffers outgoing packets and resends them when it receives NACK feedback.
+
+### Basic Usage
+
+```go
+// Create NACK responder
+responderFactory, err := nack.NewResponderInterceptor()
+if err != nil {
+    panic(err)
+}
+
+m.Add(responderFactory)
+```
+
+### Configuration Options
+
+<Accordion title="ResponderSize">
+Sets the buffer size for storing sent packets.
+
+```go
+responderFactory, err := nack.NewResponderInterceptor(
+    nack.ResponderSize(1024), // Default: 1024
+)
+```
+
+**Valid sizes**: 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768
+</Accordion>
+
+<Accordion title="DisableCopy">
+Disables packet copying for better performance when you're not reusing buffers.
+
+```go
+responderFactory, err := nack.NewResponderInterceptor(
+    nack.DisableCopy(),
+)
+```
+
+<Warning>
+Only use `DisableCopy()` if you're certain that packet buffers won't be reused after writing.
+</Warning>
+</Accordion>
+
+<Accordion title="ResponderStreamsFilter">
+Filter which streams should respond to NACKs.
+
+```go
+responderFactory, err := nack.NewResponderInterceptor(
+    nack.ResponderStreamsFilter(func(info *interceptor.StreamInfo) bool {
+        return info.MimeType == "video/vp8"
+    }),
+)
+```
+</Accordion>
+
+### Complete Example
+
+```go
+responderFactory, err := nack.NewResponderInterceptor(
+    nack.ResponderSize(2048),
+    nack.WithResponderLoggerFactory(loggerFactory),
+)
+if err != nil {
+    panic(err)
+}
+```
+
+## Using Both Together
+
+For bidirectional communication, you typically need both generator and responder:
+
+```go
+import (
+    "time"
+    "github.com/pion/interceptor"
+    "github.com/pion/interceptor/pkg/nack"
+)
+
+// Create interceptor registry
+m := &interceptor.Registry{}
+
+// Add NACK generator (for receiving)
+generatorFactory, err := nack.NewGeneratorInterceptor(
+    nack.GeneratorSize(1024),
+    nack.GeneratorInterval(100 * time.Millisecond),
+    nack.GeneratorMaxNacksPerPacket(3),
+)
+if err != nil {
+    panic(err)
+}
+m.Add(generatorFactory)
+
+// Add NACK responder (for sending)
+responderFactory, err := nack.NewResponderInterceptor(
+    nack.ResponderSize(2048),
+)
+if err != nil {
+    panic(err)
+}
+m.Add(responderFactory)
+```
+
+## How It Works
+
+1. **Generator**: Monitors incoming RTP packets and maintains a sequence number log
+2. **Detection**: Periodically checks for gaps in sequence numbers
+3. **Request**: Sends RTCP NACK packets requesting missing sequence numbers
+4. **Responder**: Receives NACK feedback and resends buffered packets
+5. **Delivery**: Missing packets are retransmitted to fill gaps
+
+<Info>
+The generator uses a `receiveLog` to track received sequence numbers, while the responder uses an `rtpBuffer` to store sent packets for potential retransmission.
+</Info>
+
+## Performance Considerations
+
+- **Buffer Size**: Larger buffers can handle more packet loss but use more memory
+- **Interval**: Shorter intervals detect losses faster but generate more RTCP traffic
+- **Max NACKs**: Limiting retries prevents wasting bandwidth on permanently lost packets
+- **Skip Last N**: Reduces unnecessary NACKs for packets still in flight
+
+<Note>
+The NACK interceptor works best with RTT-aware tuning. For high-latency networks, increase the interval and skip last N values.
+</Note>
+
+## Related Interceptors
+
+- [FlexFEC](/interceptors/flexfec) - Forward error correction as an alternative to NACK
+- [Report](/interceptors/report) - Get statistics on packet loss
+- [Stats](/interceptors/stats) - Monitor retransmission effectiveness

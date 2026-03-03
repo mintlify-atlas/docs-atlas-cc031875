@@ -1,0 +1,134 @@
+---
+title: Built-in Interceptors Overview
+description: Overview of all built-in interceptors available in the Pion Interceptor library
+---
+
+Pion Interceptor provides a comprehensive set of built-in interceptors for common WebRTC operations. These interceptors can be composed together to add functionality to RTP/RTCP streams.
+
+## Available Interceptors
+
+### Congestion Control
+
+<CardGroup cols={2}>
+  <Card title="NACK" icon="rotate-left" href="/interceptors/nack">
+    Request and respond to packet retransmissions
+  </Card>
+  <Card title="GCC" icon="gauge-high" href="/interceptors/gcc">
+    Google Congestion Control for bandwidth estimation
+  </Card>
+  <Card title="TWCC" icon="chart-line" href="/interceptors/twcc">
+    Transport-wide congestion control feedback
+  </Card>
+  <Card title="RFC 8888" icon="file-lines" href="/interceptors/rfc8888">
+    RTP Congestion Control Feedback
+  </Card>
+</CardGroup>
+
+### Quality and Reliability
+
+<CardGroup cols={2}>
+  <Card title="FlexFEC" icon="shield" href="/interceptors/flexfec">
+    Forward error correction for packet recovery
+  </Card>
+  <Card title="Jitter Buffer" icon="buffer" href="/interceptors/jitterbuffer">
+    Smooth packet arrival and handle network jitter
+  </Card>
+  <Card title="Pacing" icon="clock" href="/interceptors/pacing">
+    Control packet sending rate
+  </Card>
+</CardGroup>
+
+### Reporting and Monitoring
+
+<CardGroup cols={2}>
+  <Card title="Reports" icon="chart-mixed" href="/interceptors/report">
+    Generate sender and receiver reports
+  </Card>
+  <Card title="Statistics" icon="chart-bar" href="/interceptors/stats">
+    Collect detailed stream statistics
+  </Card>
+  <Card title="Interval PLI" icon="image" href="/interceptors/intervalpli">
+    Request keyframes at regular intervals
+  </Card>
+</CardGroup>
+
+### Debugging
+
+<Card title="Packet Dump" icon="download" href="/interceptors/packetdump">
+  Dump RTP/RTCP packets for debugging and analysis
+</Card>
+
+## How Interceptors Work
+
+Interceptors sit in the RTP/RTCP processing pipeline and can:
+
+- **Read** incoming RTP/RTCP packets
+- **Write** outgoing RTP/RTCP packets
+- **Modify** packet contents
+- **Generate** new RTCP feedback
+- **Buffer** packets for reordering or retransmission
+
+<Info>
+Interceptors are bound to streams and peer connections, allowing fine-grained control over packet processing.
+</Info>
+
+## Creating an Interceptor Chain
+
+Multiple interceptors can be composed together:
+
+```go
+import (
+    "github.com/pion/interceptor"
+    "github.com/pion/interceptor/pkg/gcc"
+    "github.com/pion/interceptor/pkg/nack"
+    "github.com/pion/interceptor/pkg/report"
+)
+
+// Create an interceptor registry
+m := &interceptor.Registry{}
+
+// Register multiple interceptors
+interceptor.RegisterDefaultInterceptors(m, &mediaEngine)
+
+// Add NACK support
+generatorFactory, _ := nack.NewGeneratorInterceptor()
+m.Add(generatorFactory)
+
+responderFactory, _ := nack.NewResponderInterceptor()
+m.Add(responderFactory)
+
+// Add sender/receiver reports
+senderFactory, _ := report.NewSenderInterceptor()
+m.Add(senderFactory)
+
+receiverFactory, _ := report.NewReceiverInterceptor()
+m.Add(receiverFactory)
+```
+
+## Configuration Options
+
+Most interceptors support configuration through functional options:
+
+```go
+// Configure NACK generator with custom settings
+generatorFactory, _ := nack.NewGeneratorInterceptor(
+    nack.GeneratorSize(1024),
+    nack.GeneratorInterval(100 * time.Millisecond),
+    nack.GeneratorMaxNacksPerPacket(3),
+)
+```
+
+<Note>
+See individual interceptor pages for specific configuration options and usage examples.
+</Note>
+
+## Best Practices
+
+1. **Order Matters**: The order in which interceptors are added affects the processing pipeline
+2. **Resource Management**: Always close interceptors when done to free resources
+3. **Logging**: Use logger factories for debugging and monitoring
+4. **Testing**: Test interceptor chains with your specific use case
+
+## Next Steps
+
+Explore the individual interceptor documentation to learn more about each component and how to configure them for your use case.

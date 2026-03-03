@@ -1,0 +1,413 @@
+---
+title: "FlexFEC Package"
+description: "Forward Error Correction using Flexible FEC"
+---
+
+The `flexfec` package implements Forward Error Correction (FEC) using the FlexFEC algorithm. FEC allows receivers to recover lost packets without retransmission by sending redundant data.
+
+## Overview
+
+FlexFEC (Flexible Forward Error Correction) adds redundancy to RTP streams:
+- **Sender**: Generates FEC packets from media packets
+- **Receiver**: Reconstructs lost media packets from FEC packets
+- **Efficiency**: Configurable redundancy level
+- **Interoperability**: Compatible with WebRTC (Chrome supports flexfec-03)
+
+## FecInterceptor
+
+Generates FEC packets for outgoing RTP streams.
+
+### Factory
+
+```go
+type FecInterceptorFactory struct {
+    // contains filtered or unexported fields
+}
+```
+
+### Constructor
+
+```go
+func NewFecInterceptor(opts ...FecOption) (*FecInterceptorFactory, error)
+```
+
+Creates a new FEC interceptor factory.
+
+### Options
+
+#### NumMediaPackets
+
+```go
+func NumMediaPackets(n uint32) FecOption
+```
+
+Sets the number of media packets in each FEC group.
+
+<ParamField path="n" type="uint32">
+  Number of media packets per FEC group. Default: 5
+</ParamField>
+
+#### NumFecPackets
+
+```go
+func NumFecPackets(n uint32) FecOption
+```
+
+Sets the number of FEC packets generated per group.
+
+<ParamField path="n" type="uint32">
+  Number of FEC packets per group. Default: 2
+</ParamField>
+
+### Usage Example
+
+```go
+import (
+    "github.com/pion/interceptor"
+    "github.com/pion/interceptor/pkg/flexfec"
+)
+
+// Create FEC interceptor
+// 5 media packets, 2 FEC packets = 40% redundancy
+fec, err := flexfec.NewFecInterceptor(
+    flexfec.NumMediaPackets(5),
+    flexfec.NumFecPackets(2),
+)
+if err != nil {
+    panic(err)
+}
+
+// Add to registry
+registry := &interceptor.Registry{}
+registry.Add(fec)
+```
+
+## FlexEncoder Interface
+
+```go
+type FlexEncoder interface {
+    EncodeFec(mediaPackets []rtp.Packet, numFecPackets uint32) []rtp.Packet
+}
+```
+
+### EncodeFec
+
+Generates FEC packets from media packets.
+
+<ParamField path="mediaPackets" type="[]rtp.Packet">
+  Media packets to protect with FEC
+</ParamField>
+
+<ParamField path="numFecPackets" type="uint32">
+  Number of FEC packets to generate
+</ParamField>
+
+**Returns:** `[]rtp.Packet` - Generated FEC packets
+
+## EncoderFactory Interface
+
+```go
+type EncoderFactory interface {
+    NewEncoder(payloadType uint8, ssrc uint32) FlexEncoder
+}
+```
+
+### Implementations
+
+#### FlexEncoder03Factory
+
+Default factory implementing FlexFEC draft-03 (compatible with Chrome).
+
+```go
+type FlexEncoder03Factory struct{}
+
+func (f FlexEncoder03Factory) NewEncoder(payloadType uint8, ssrc uint32) FlexEncoder
+```
+
+## WebRTC Setup
+
+### Configuration
+
+```go
+import (
+    "github.com/pion/interceptor"
+    "github.com/pion/interceptor/pkg/flexfec"
+    "github.com/pion/webrtc/v4"
+)
+
+func setupFlexFEC() (*webrtc.PeerConnection, error) {
+    m := &webrtc.MediaEngine{}
+    
+    // Register video codec
+    if err := m.RegisterCodec(webrtc.RTPCodecParameters{
+        RTPCodecCapability: webrtc.RTPCodecCapability{
+            MimeType:     webrtc.MimeTypeVP8,
+            ClockRate:    90000,
+            Channels:     0,
+            SDPFmtpLine:  "",
+        },
+        PayloadType: 96,
+    }, webrtc.RTPCodecTypeVideo); err != nil {
+        return nil, err
+    }
+    
+    // Register FlexFEC codec
+    if err := m.RegisterCodec(webrtc.RTPCodecParameters{
+        RTPCodecCapability: webrtc.RTPCodecCapability{
+            MimeType:    "video/flexfec-03",
+            ClockRate:   90000,
+            Channels:    0,
+            SDPFmtpLine: "repair-window=10000000",
+        },
+        PayloadType: 118,
+    }, webrtc.RTPCodecTypeVideo); err != nil {
+        return nil, err
+    }
+    
+    ir := &interceptor.Registry{}
+    
+    // Add FEC interceptor
+    fec, _ := flexfec.NewFecInterceptor(
+        flexfec.NumMediaPackets(10),
+        flexfec.NumFecPackets(3),
+    )
+    ir.Add(fec)
+    
+    api := webrtc.NewAPI(
+        webrtc.WithMediaEngine(m),
+        webrtc.WithInterceptorRegistry(ir),
+    )
+    
+    return api.NewPeerConnection(webrtc.Configuration{})
+}
+```
+
+### SDP Configuration
+
+FlexFEC requires configuration in the SDP offer/answer:
+
+```
+m=video 9 UDP/TLS/RTP/SAVPF 96 118
+a=rtpmap:96 VP8/90000
+a=rtpmap:118 flexfec-03/90000
+a=fmtp:118 repair-window=10000000
+```
+
+## How It Works
+
+### Encoding Process
+
+1. **Buffer Media Packets**: Collects N media packets
+2. **Generate FEC**: Creates M FEC packets using XOR operations
+3. **Send All**: Transmits media packets followed by FEC packets
+4. **Repeat**: Process next group of media packets
+
+### Example
+
+With NumMediaPackets=5 and NumFecPackets=2:
+
+```
+Media packets: P1 P2 P3 P4 P5
+FEC packets:   F1 F2
+
+F1 can recover any single lost packet from {P1, P2, P3, P4, P5}
+F2 provides additional recovery capability
+```
+
+### Decoding (Receiver Side)
+
+1. **Receive Packets**: Collects media and FEC packets
+2. **Detect Loss**: Identifies missing media packets
+3. **Reconstruct**: Uses FEC packets to recover lost media
+4. **Forward**: Passes reconstructed packets to decoder
+
+Note: Receiver-side FEC decoding is not implemented in this package.
+
+## Redundancy Levels
+
+### Formula
+
+```
+Redundancy = (NumFecPackets / NumMediaPackets) × 100%
+```
+
+### Examples
+
+| Media | FEC | Redundancy | Use Case |
+|-------|-----|------------|----------|
+| 10 | 1 | 10% | Low loss networks |
+| 10 | 2 | 20% | Moderate loss |
+| 5 | 2 | 40% | High loss networks |
+| 10 | 5 | 50% | Very high loss |
+
+### Trade-offs
+
+**Low Redundancy (10-20%)**:
+- ✅ Minimal bandwidth overhead
+- ✅ Works well on good networks
+- ❌ Limited loss recovery
+
+**Medium Redundancy (30-40%)**:
+- ✅ Good balance
+- ✅ Recovers most packet loss
+- ⚠️ Moderate bandwidth increase
+
+**High Redundancy (50%+)**:
+- ✅ Maximum recovery capability
+- ❌ Significant bandwidth overhead
+- ❌ May worsen congestion
+
+## Performance Characteristics
+
+### Bandwidth Overhead
+
+```go
+// Calculate bandwidth increase
+overhead := float64(numFecPackets) / float64(numMediaPackets)
+bandwidthIncrease := overhead * 100 // percent
+
+// Example: 1 Mbps video with 20% FEC
+originalBitrate := 1_000_000 // bps
+totalBitrate := int(float64(originalBitrate) * (1.0 + overhead))
+// totalBitrate = 1,200,000 bps (1.2 Mbps)
+```
+
+### Latency
+
+- **Encoding delay**: Time to collect NumMediaPackets
+- **At 30 fps**: 5 packets = ~167ms delay
+- **At 60 fps**: 5 packets = ~83ms delay
+
+### CPU Usage
+
+- XOR operations on packet payloads
+- Minimal CPU overhead
+- Scales linearly with packet size and FEC count
+
+## Advanced Configuration
+
+### Dynamic FEC Adjustment
+
+```go
+import "github.com/pion/interceptor/pkg/stats"
+
+func adjustFEC(statsGetter stats.Getter, ssrc uint32, fecFactory *flexfec.FecInterceptorFactory) {
+    ticker := time.NewTicker(5 * time.Second)
+    defer ticker.Stop()
+    
+    for range ticker.C {
+        s := statsGetter.Get(ssrc)
+        if s == nil {
+            continue
+        }
+        
+        lossRate := float64(s.RemoteInboundRTPStreamStats.PacketsLost) /
+                    float64(s.RemoteInboundRTPStreamStats.PacketsReceived)
+        
+        var numMedia, numFec uint32
+        switch {
+        case lossRate < 0.01:
+            numMedia, numFec = 20, 1 // 5% FEC
+        case lossRate < 0.03:
+            numMedia, numFec = 10, 2 // 20% FEC
+        case lossRate < 0.05:
+            numMedia, numFec = 10, 3 // 30% FEC
+        default:
+            numMedia, numFec = 5, 3  // 60% FEC
+        }
+        
+        // Recreate FEC interceptor with new params
+        // (actual implementation would need to support dynamic reconfiguration)
+        log.Printf("Adjusting FEC: %d media, %d fec packets", numMedia, numFec)
+    }
+}
+```
+
+### Custom Encoder
+
+```go
+type CustomEncoder struct {
+    payloadType uint8
+    ssrc        uint32
+}
+
+func (e *CustomEncoder) EncodeFec(
+    mediaPackets []rtp.Packet,
+    numFecPackets uint32,
+) []rtp.Packet {
+    // Custom FEC encoding logic
+    fecPackets := make([]rtp.Packet, numFecPackets)
+    // ... implement custom algorithm ...
+    return fecPackets
+}
+
+type CustomEncoderFactory struct{}
+
+func (f CustomEncoderFactory) NewEncoder(
+    payloadType uint8,
+    ssrc uint32,
+) flexfec.FlexEncoder {
+    return &CustomEncoder{
+        payloadType: payloadType,
+        ssrc:        ssrc,
+    }
+}
+
+// Use custom encoder
+fec, _ := flexfec.NewFecInterceptor(
+    flexfec.WithEncoderFactory(CustomEncoderFactory{}),
+)
+```
+
+## Comparison with Other Techniques
+
+### FEC vs NACK
+
+**FEC**:
+- ✅ No RTT delay
+- ✅ Works in unidirectional scenarios
+- ❌ Bandwidth overhead even without loss
+
+**NACK**:
+- ✅ No overhead when no loss
+- ✅ Efficient for low loss rates
+- ❌ RTT delay for retransmissions
+- ❌ Requires bidirectional communication
+
+### Combined Approach
+
+Best practice: Use both FEC and NACK:
+
+```go
+// FEC for immediate recovery
+fec, _ := flexfec.NewFecInterceptor(
+    flexfec.NumMediaPackets(10),
+    flexfec.NumFecPackets(1), // Low overhead
+)
+
+// NACK as fallback
+nackGen, _ := nack.NewGeneratorInterceptor()
+nackResp, _ := nack.NewResponderInterceptor()
+
+registry.Add(fec)
+registry.Add(nackGen)
+registry.Add(nackResp)
+```
+
+## Limitations
+
+- Only sender-side encoding implemented
+- Fixed group sizes (not adaptive)
+- FlexFEC-03 draft (not final RFC)
+- Receiver must support FlexFEC
+- Adds latency equal to group collection time
+
+## See Also
+
+- [NACK Package](/api/packages/nack) - Retransmission-based loss recovery
+- [Stats Package](/api/packages/stats) - Loss statistics
+- [GCC Package](/api/packages/gcc) - Bandwidth management
+
+## Reference
+
+For more details, see the [pkg.go.dev documentation](https://pkg.go.dev/github.com/pion/interceptor/pkg/flexfec).

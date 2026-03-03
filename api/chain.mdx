@@ -1,0 +1,174 @@
+---
+title: "Chain"
+description: "Run multiple interceptors in sequence"
+---
+
+The `Chain` type is an interceptor that runs all child interceptors in order, allowing you to compose multiple interceptors into a single unit.
+
+## Type Definition
+
+```go
+type Chain struct {
+    interceptors []Interceptor
+}
+```
+
+## Constructor
+
+### NewChain
+
+```go
+func NewChain(interceptors []Interceptor) *Chain
+```
+
+Creates a new Chain interceptor that will execute the given interceptors in order.
+
+<ParamField path="interceptors" type="[]Interceptor">
+  Slice of interceptors to chain together
+</ParamField>
+
+**Returns:** `*Chain` - A new chain interceptor
+
+## Methods
+
+The `Chain` type implements the full `Interceptor` interface. Each method calls the corresponding method on all child interceptors in sequence.
+
+### BindRTCPReader
+
+```go
+func (i *Chain) BindRTCPReader(reader RTCPReader) RTCPReader
+```
+
+Binds RTCP readers from all child interceptors in sequence.
+
+### BindRTCPWriter
+
+```go
+func (i *Chain) BindRTCPWriter(writer RTCPWriter) RTCPWriter
+```
+
+Binds RTCP writers from all child interceptors in sequence.
+
+### BindLocalStream
+
+```go
+func (i *Chain) BindLocalStream(ctx *StreamInfo, writer RTPWriter) RTPWriter
+```
+
+Binds local stream writers from all child interceptors in sequence.
+
+### UnbindLocalStream
+
+```go
+func (i *Chain) UnbindLocalStream(ctx *StreamInfo)
+```
+
+Unbinds local streams from all child interceptors.
+
+### BindRemoteStream
+
+```go
+func (i *Chain) BindRemoteStream(ctx *StreamInfo, reader RTPReader) RTPReader
+```
+
+Binds remote stream readers from all child interceptors in sequence.
+
+### UnbindRemoteStream
+
+```go
+func (i *Chain) UnbindRemoteStream(ctx *StreamInfo)
+```
+
+Unbinds remote streams from all child interceptors.
+
+### Close
+
+```go
+func (i *Chain) Close() error
+```
+
+Closes all child interceptors and returns any errors that occurred.
+
+**Returns:** `error` - Aggregated errors from closing all interceptors
+
+## Usage Example
+
+```go
+import (
+    "github.com/pion/interceptor"
+    "github.com/pion/interceptor/pkg/nack"
+    "github.com/pion/interceptor/pkg/stats"
+)
+
+// Create individual interceptors
+nackGen, _ := nack.NewGeneratorInterceptor()
+nackResp, _ := nack.NewResponderInterceptor()
+statsInt, _ := stats.NewInterceptor()
+
+// Create interceptor instances
+gen, _ := nackGen.NewInterceptor("peer-1")
+resp, _ := nackResp.NewInterceptor("peer-1")
+stat, _ := statsInt.NewInterceptor("peer-1")
+
+// Chain them together
+chain := interceptor.NewChain([]interceptor.Interceptor{
+    gen,
+    resp,
+    stat,
+})
+defer chain.Close()
+
+// Use the chain as a single interceptor
+// ...
+```
+
+## Order of Execution
+
+When multiple interceptors are chained:
+
+1. **For readers** (BindRTCPReader, BindRemoteStream): Interceptors process packets in the order they appear in the slice
+2. **For writers** (BindRTCPWriter, BindLocalStream): Interceptors process packets in the order they appear in the slice
+3. **For unbind operations**: All interceptors are notified in order
+4. **For Close**: All interceptors are closed in order, and errors are aggregated
+
+## Example: Complete Pipeline
+
+```go
+// Create a comprehensive media pipeline
+func createMediaPipeline(id string) (*interceptor.Chain, error) {
+    // 1. Stats collection
+    statsFactory, _ := stats.NewInterceptor()
+    statsInt, _ := statsFactory.NewInterceptor(id)
+    
+    // 2. NACK handling
+    nackGenFactory, _ := nack.NewGeneratorInterceptor()
+    nackRespFactory, _ := nack.NewResponderInterceptor()
+    nackGen, _ := nackGenFactory.NewInterceptor(id)
+    nackResp, _ := nackRespFactory.NewInterceptor(id)
+    
+    // 3. Report generation
+    reportRecvFactory, _ := report.NewReceiverInterceptor()
+    reportSendFactory, _ := report.NewSenderInterceptor()
+    reportRecv, _ := reportRecvFactory.NewInterceptor(id)
+    reportSend, _ := reportSendFactory.NewInterceptor(id)
+    
+    // Chain them in logical order
+    return interceptor.NewChain([]interceptor.Interceptor{
+        statsInt,      // First: collect stats
+        nackGen,       // Generate NACKs for missing packets
+        nackResp,      // Respond to NACK requests
+        reportRecv,    // Generate receiver reports
+        reportSend,    // Generate sender reports
+    }), nil
+}
+```
+
+## See Also
+
+- [Interceptor](/api/interceptor) - The interface that Chain implements
+- [Registry](/api/registry) - Alternative way to manage multiple interceptors
+- [NoOp](/api/noop) - Base interceptor implementation
+
+## Reference
+
+For more details, see the [pkg.go.dev documentation](https://pkg.go.dev/github.com/pion/interceptor#Chain).

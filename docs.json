@@ -1,122 +1,106 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mint Starter Kit",
+  "name": "Pion Interceptor",
+  "theme": "palm",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#0078D4"
   },
-  "favicon": "/favicon.svg",
+  "navbar": {
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/pion/interceptor"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/pion/interceptor"
+    }
+  },
   "navigation": {
     "tabs": [
       {
-        "tab": "Guides",
+        "tab": "Documentation",
         "groups": [
           {
-            "group": "Getting started",
+            "group": "Get Started",
             "pages": [
-              "index",
-              "quickstart",
-              "development"
+              "introduction",
+              "installation",
+              "quickstart"
             ]
           },
           {
-            "group": "Customization",
+            "group": "Core Concepts",
             "pages": [
-              "essentials/settings",
-              "essentials/navigation"
+              "concepts/architecture",
+              "concepts/interceptor-interface",
+              "concepts/chaining",
+              "concepts/registry",
+              "concepts/attributes-streaminfo"
             ]
           },
           {
-            "group": "Writing content",
+            "group": "Built-in Interceptors",
             "pages": [
-              "essentials/markdown",
-              "essentials/code",
-              "essentials/images",
-              "essentials/reusable-snippets"
+              "interceptors/overview",
+              "interceptors/nack",
+              "interceptors/gcc",
+              "interceptors/twcc",
+              "interceptors/report",
+              "interceptors/stats",
+              "interceptors/jitterbuffer",
+              "interceptors/flexfec",
+              "interceptors/intervalpli",
+              "interceptors/packetdump",
+              "interceptors/rfc8888",
+              "interceptors/pacing"
             ]
           },
           {
-            "group": "AI tools",
+            "group": "Advanced",
             "pages": [
-              "ai-tools/cursor",
-              "ai-tools/claude-code",
-              "ai-tools/windsurf"
+              "advanced/custom-interceptors",
+              "advanced/examples",
+              "advanced/best-practices"
             ]
           }
         ]
       },
       {
-        "tab": "API reference",
+        "tab": "API Reference",
         "groups": [
           {
-            "group": "API documentation",
+            "group": "Core API",
             "pages": [
-              "api-reference/introduction"
+              "api/interceptor",
+              "api/factory",
+              "api/chain",
+              "api/registry",
+              "api/noop",
+              "api/attributes",
+              "api/streaminfo"
             ]
           },
           {
-            "group": "Endpoint examples",
+            "group": "Interceptor Packages",
             "pages": [
-              "api-reference/endpoint/get",
-              "api-reference/endpoint/create",
-              "api-reference/endpoint/delete",
-              "api-reference/endpoint/webhook"
+              "api/packages/nack",
+              "api/packages/gcc",
+              "api/packages/twcc",
+              "api/packages/report",
+              "api/packages/stats",
+              "api/packages/jitterbuffer",
+              "api/packages/flexfec",
+              "api/packages/intervalpli",
+              "api/packages/packetdump",
+              "api/packages/rfc8888",
+              "api/packages/rtpfb",
+              "api/packages/pacing",
+              "api/packages/cc"
             ]
           }
         ]
       }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
-  },
-  "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
-    "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://dashboard.mintlify.com"
-    }
-  },
-  "contextual": {
-    "options": [
-     "copy",
-     "view",
-     "chatgpt",
-     "claude",
-     "perplexity",
-     "mcp",
-     "cursor",
-     "vscode"
-   ]
-  },
-  "footer": {
-    "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
-    }
+    ]
   }
 }

@@ -1,0 +1,455 @@
+---
+title: "IntervalPLI Package"
+description: "Periodic Picture Loss Indication for video streams"
+---
+
+The `intervalpli` package provides an interceptor that periodically sends Picture Loss Indication (PLI) RTCP feedback messages to request keyframes from video senders.
+
+## Overview
+
+PLI (Picture Loss Indication) is an RTCP feedback message that requests a video keyframe:
+- **Purpose**: Recover from severe packet loss or decoder errors
+- **Mechanism**: Requests immediate intra-frame (I-frame/keyframe)
+- **Use Case**: Ensure decodable video stream after loss or on stream start
+
+## GeneratorInterceptor
+
+Sends PLI messages at regular intervals for video streams.
+
+### Factory
+
+```go
+type ReceiverInterceptorFactory struct {
+    // contains filtered or unexported fields
+}
+```
+
+### Constructor
+
+```go
+func NewReceiverInterceptor(opts ...GeneratorOption) (*ReceiverInterceptorFactory, error)
+```
+
+Creates a new interval PLI interceptor factory.
+
+### Options
+
+#### GeneratorInterval
+
+```go
+func GeneratorInterval(interval time.Duration) GeneratorOption
+```
+
+Sets how often PLI messages are sent.
+
+<ParamField path="interval" type="time.Duration">
+  PLI send interval. Default: 3 seconds. Set to 0 to disable periodic sending.
+</ParamField>
+
+#### WithGeneratorLoggerFactory
+
+```go
+func WithGeneratorLoggerFactory(loggerFactory logging.LoggerFactory) GeneratorOption
+```
+
+Sets a custom logger factory.
+
+### Methods
+
+#### ForcePLI
+
+```go
+func (r *GeneratorInterceptor) ForcePLI(ssrc ...uint32)
+```
+
+Immediately sends PLI for the specified SSRCs.
+
+<ParamField path="ssrc" type="...uint32">
+  SSRCs to send PLI for. Can pass multiple SSRCs.
+</ParamField>
+
+## Usage Example
+
+### Basic Setup
+
+```go
+import (
+    "time"
+    "github.com/pion/interceptor"
+    "github.com/pion/interceptor/pkg/intervalpli"
+)
+
+// Create PLI generator
+// Sends PLI every 3 seconds
+pli, err := intervalpli.NewReceiverInterceptor(
+    intervalpli.GeneratorInterval(3 * time.Second),
+)
+if err != nil {
+    panic(err)
+}
+
+// Add to registry
+registry := &interceptor.Registry{}
+registry.Add(pli)
+
+// Build interceptor
+i, err := registry.Build("peer-connection-1")
+if err != nil {
+    panic(err)
+}
+defer i.Close()
+```
+
+### Disable Periodic PLI
+
+```go
+// Only send PLI on-demand via ForcePLI()
+pli, _ := intervalpli.NewReceiverInterceptor(
+    intervalpli.GeneratorInterval(0), // Disable periodic sending
+)
+```
+
+### Force Immediate PLI
+
+```go
+import "github.com/pion/interceptor/pkg/intervalpli"
+
+// Get reference to the interceptor
+var pliGen *intervalpli.GeneratorInterceptor
+
+// Later, force PLI for specific SSRC
+pliGen.ForcePLI(videoSSRC)
+
+// Or for multiple SSRCs
+pliGen.ForcePLI(ssrc1, ssrc2, ssrc3)
+```
+
+## WebRTC Integration
+
+```go
+import (
+    "time"
+    "github.com/pion/interceptor"
+    "github.com/pion/interceptor/pkg/intervalpli"
+    "github.com/pion/webrtc/v4"
+)
+
+func setupPLI() (*webrtc.PeerConnection, *intervalpli.GeneratorInterceptor, error) {
+    m := &webrtc.MediaEngine{}
+    if err := m.RegisterDefaultCodecs(); err != nil {
+        return nil, nil, err
+    }
+    
+    ir := &interceptor.Registry{}
+    
+    // Create PLI generator
+    pliFactory, _ := intervalpli.NewReceiverInterceptor(
+        intervalpli.GeneratorInterval(2 * time.Second),
+    )
+    ir.Add(pliFactory)
+    
+    // Get reference for manual control
+    pliGen, _ := intervalpli.NewGeneratorInterceptor(
+        intervalpli.GeneratorInterval(2 * time.Second),
+    )
+    
+    api := webrtc.NewAPI(
+        webrtc.WithMediaEngine(m),
+        webrtc.WithInterceptorRegistry(ir),
+    )
+    
+    pc, err := api.NewPeerConnection(webrtc.Configuration{})
+    return pc, pliGen, err
+}
+```
+
+## How It Works
+
+### Automatic PLI
+
+1. **Stream Detection**: Detects new remote video streams
+2. **Initial PLI**: Sends PLI immediately when stream starts
+3. **Periodic PLI**: Sends PLI at configured intervals
+4. **RTCP Feedback**: PLI sent as RTCP feedback message
+
+### Manual PLI
+
+1. **Application Trigger**: Call `ForcePLI(ssrc)`
+2. **Immediate Send**: PLI sent immediately
+3. **No Interval**: Doesn't affect periodic timer
+
+## PLI Message Structure
+
+```go
+type PictureLossIndication struct {
+    SenderSSRC uint32  // SSRC of sender
+    MediaSSRC  uint32  // SSRC of media stream
+}
+```
+
+Minimal RTCP packet (~12 bytes):
+- RTCP header: 8 bytes
+- Sender SSRC: 4 bytes  
+- Media SSRC: 4 bytes
+
+## Use Cases
+
+### Stream Start
+
+```go
+// Ensure keyframe at stream start
+pli, _ := intervalpli.NewReceiverInterceptor(
+    intervalpli.GeneratorInterval(0), // No periodic PLI
+)
+
+// When new stream detected
+pc.OnTrack(func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
+    if track.Kind() == webrtc.RTPCodecTypeVideo {
+        // Force PLI to get initial keyframe
+        pliGen.ForcePLI(uint32(track.SSRC()))
+    }
+})
+```
+
+### Error Recovery
+
+```go
+// Periodic PLI for resilience
+pli, _ := intervalpli.NewReceiverInterceptor(
+    intervalpli.GeneratorInterval(3 * time.Second),
+)
+
+// Also force PLI on detected corruption
+if detectVideoCorruption() {
+    pliGen.ForcePLI(videoSSRC)
+}
+```
+
+### Simulcast Layer Switch
+
+```go
+// Request keyframe when switching simulcast layers
+func switchLayer(newSSRC uint32) {
+    // Switch to new layer
+    updateReceiver(newSSRC)
+    
+    // Request keyframe for clean decode
+    pliGen.ForcePLI(newSSRC)
+}
+```
+
+### Bandwidth Adaptation
+
+```go
+import "github.com/pion/interceptor/pkg/stats"
+
+// Request keyframe after bitrate change
+func onBitrateChange(newBitrate int, ssrc uint32) {
+    updateEncoderBitrate(newBitrate)
+    
+    // Request keyframe to apply new bitrate
+    pliGen.ForcePLI(ssrc)
+}
+```
+
+## Interval Selection
+
+### Frequent (1-2 seconds)
+
+**Pros:**
+- Quick recovery from errors
+- Ensures fresh keyframes
+
+**Cons:**
+- Higher bitrate spikes
+- More CPU on encoder
+- Unnecessary keyframes
+
+### Moderate (2-4 seconds)
+
+**Pros:**
+- Balanced approach
+- Good for most scenarios
+
+**Cons:**
+- Moderate overhead
+
+### Infrequent (5+ seconds)
+
+**Pros:**
+- Minimal overhead
+- Less encoder stress
+
+**Cons:**
+- Slower error recovery
+- Longer corruption periods
+
+### On-Demand Only (interval = 0)
+
+**Pros:**
+- No periodic overhead
+- Full application control
+
+**Cons:**
+- Requires manual triggering
+- No automatic recovery
+
+## Advanced Usage
+
+### Adaptive PLI Interval
+
+```go
+import "github.com/pion/interceptor/pkg/stats"
+
+func adaptivePLI(statsGetter stats.Getter, ssrc uint32, pliGen *intervalpli.GeneratorInterceptor) {
+    ticker := time.NewTicker(1 * time.Second)
+    defer ticker.Stop()
+    
+    lastStats := statsGetter.Get(ssrc)
+    
+    for range ticker.C {
+        currentStats := statsGetter.Get(ssrc)
+        if currentStats == nil || lastStats == nil {
+            continue
+        }
+        
+        // Calculate loss rate since last check
+        lostPackets := currentStats.PacketsLost - lastStats.PacketsLost
+        receivedPackets := currentStats.PacketsReceived - lastStats.PacketsReceived
+        
+        if receivedPackets > 0 {
+            lossRate := float64(lostPackets) / float64(receivedPackets)
+            
+            // Force PLI if high loss detected
+            if lossRate > 0.05 {
+                log.Printf("High loss detected (%.1f%%), requesting keyframe", lossRate*100)
+                pliGen.ForcePLI(ssrc)
+            }
+        }
+        
+        lastStats = currentStats
+    }
+}
+```
+
+### Conditional PLI
+
+```go
+type ConditionalPLI struct {
+    pliGen          *intervalpli.GeneratorInterceptor
+    lastKeyframe    map[uint32]time.Time
+    minInterval     time.Duration
+}
+
+func (c *ConditionalPLI) RequestKeyframe(ssrc uint32) {
+    now := time.Now()
+    
+    // Rate limit PLI requests
+    if last, ok := c.lastKeyframe[ssrc]; ok {
+        if now.Sub(last) < c.minInterval {
+            log.Printf("PLI rate limited for SSRC %d", ssrc)
+            return
+        }
+    }
+    
+    c.lastKeyframe[ssrc] = now
+    c.pliGen.ForcePLI(ssrc)
+}
+```
+
+### Multiple Stream Management
+
+```go
+type VideoStreamManager struct {
+    pliGen *intervalpli.GeneratorInterceptor
+    ssrcs  []uint32
+    mu     sync.Mutex
+}
+
+func (m *VideoStreamManager) AddStream(ssrc uint32) {
+    m.mu.Lock()
+    defer m.mu.Unlock()
+    
+    m.ssrcs = append(m.ssrcs, ssrc)
+    
+    // Request initial keyframe
+    m.pliGen.ForcePLI(ssrc)
+}
+
+func (m *VideoStreamManager) RefreshAll() {
+    m.mu.Lock()
+    defer m.mu.Unlock()
+    
+    // Request keyframes for all streams
+    m.pliGen.ForcePLI(m.ssrcs...)
+}
+```
+
+## Performance Characteristics
+
+### Bandwidth Impact
+
+PLI message: ~12 bytes (~96 bits)
+
+At 2 second interval:
+- RTCP overhead: 48 bps per stream
+- Negligible compared to video bitrate
+
+Keyframe impact:
+- Keyframe size: 5-10x larger than P-frame
+- Bitrate spike: 2-5x average bitrate temporarily
+- Duration: One frame period
+
+### Latency
+
+PLI response time:
+1. PLI sent: 0ms
+2. Network transit: 10-50ms (RTT/2)
+3. Encoder generates keyframe: 0-33ms (depends on frame rate)
+4. Network return: 10-50ms (RTT/2)
+5. **Total**: ~50-150ms
+
+## Debugging
+
+```go
+import "github.com/pion/logging"
+
+loggerFactory := logging.NewDefaultLoggerFactory()
+loggerFactory.DefaultLogLevel = logging.LogLevelDebug
+
+pli, _ := intervalpli.NewReceiverInterceptor(
+    intervalpli.WithGeneratorLoggerFactory(loggerFactory),
+    intervalpli.GeneratorInterval(3 * time.Second),
+)
+
+// Log will show:
+// - When PLI is sent
+// - Which SSRCs receive PLI
+// - Timing information
+```
+
+## Comparison with FIR
+
+### PLI (Picture Loss Indication)
+
+- Requests any intra frame
+- Lighter weight
+- More common
+- Preferred for WebRTC
+
+### FIR (Full Intra Request)
+
+- Requests full intra refresh
+- Includes sequence number
+- More explicit
+- Legacy support
+
+## See Also
+
+- [NACK Package](/api/packages/nack) - Packet retransmission
+- [Stats Package](/api/packages/stats) - Loss statistics
+- [FlexFEC Package](/api/packages/flexfec) - Forward error correction
+
+## Reference
+
+For more details, see the [pkg.go.dev documentation](https://pkg.go.dev/github.com/pion/interceptor/pkg/intervalpli).

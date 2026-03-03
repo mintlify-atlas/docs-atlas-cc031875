@@ -1,0 +1,429 @@
+---
+title: "PacketDump Package"
+description: "Logging and debugging RTP/RTCP packets"
+---
+
+The `packetdump` package provides interceptors for logging RTP and RTCP packets, useful for debugging and analysis.
+
+## Overview
+
+Packet dumping enables:
+- **Debugging**: Inspect packet contents and flow
+- **Analysis**: Study traffic patterns and timing
+- **Troubleshooting**: Identify packet loss, reordering, corruption
+- **Performance**: Measure packet rates and sizes
+
+## ReceiverInterceptor
+
+Logs incoming RTP and RTCP packets.
+
+### Factory
+
+```go
+type ReceiverInterceptorFactory struct {
+    // contains filtered or unexported fields
+}
+```
+
+### Constructor
+
+```go
+func NewReceiverInterceptor(opts ...PacketDumperOption) (*ReceiverInterceptorFactory, error)
+```
+
+Creates a new receiver packet dump interceptor factory.
+
+## SenderInterceptor
+
+Logs outgoing RTP and RTCP packets.
+
+### Factory
+
+```go
+type SenderInterceptorFactory struct {
+    // contains filtered or unexported fields
+}
+```
+
+### Constructor
+
+```go
+func NewSenderInterceptor(opts ...PacketDumperOption) (*SenderInterceptorFactory, error)
+```
+
+Creates a new sender packet dump interceptor factory.
+
+## Options
+
+Currently uses default logging. Options interface available for future extensibility.
+
+## Usage Example
+
+### Basic Setup
+
+```go
+import (
+    "github.com/pion/interceptor"
+    "github.com/pion/interceptor/pkg/packetdump"
+)
+
+// Log incoming packets
+receiver, err := packetdump.NewReceiverInterceptor()
+if err != nil {
+    panic(err)
+}
+
+// Log outgoing packets
+sender, err := packetdump.NewSenderInterceptor()
+if err != nil {
+    panic(err)
+}
+
+// Add to registry
+registry := &interceptor.Registry{}
+registry.Add(receiver)
+registry.Add(sender)
+```
+
+### WebRTC Integration
+
+```go
+import (
+    "github.com/pion/interceptor"
+    "github.com/pion/interceptor/pkg/packetdump"
+    "github.com/pion/webrtc/v4"
+)
+
+func setupPacketDump() (*webrtc.PeerConnection, error) {
+    m := &webrtc.MediaEngine{}
+    if err := m.RegisterDefaultCodecs(); err != nil {
+        return nil, err
+    }
+    
+    ir := &interceptor.Registry{}
+    
+    // Dump all packets
+    recv, _ := packetdump.NewReceiverInterceptor()
+    send, _ := packetdump.NewSenderInterceptor()
+    ir.Add(recv)
+    ir.Add(send)
+    
+    api := webrtc.NewAPI(
+        webrtc.WithMediaEngine(m),
+        webrtc.WithInterceptorRegistry(ir),
+    )
+    
+    return api.NewPeerConnection(webrtc.Configuration{})
+}
+```
+
+## Output Format
+
+Packet dumps typically include:
+
+### RTP Packets
+
+```
+RTP Packet:
+  Direction: incoming/outgoing
+  SSRC: 0x12345678
+  Sequence: 12345
+  Timestamp: 1234567890
+  PayloadType: 96
+  Marker: false
+  Payload size: 1200 bytes
+```
+
+### RTCP Packets
+
+```
+RTCP Packet:
+  Direction: incoming/outgoing
+  Type: Sender Report
+  SSRC: 0x12345678
+  NTP Time: 3847219284.123456
+  RTP Time: 1234567890
+  Packet Count: 5432
+  Octet Count: 6543210
+```
+
+## Use Cases
+
+### Debugging Packet Loss
+
+```go
+import "github.com/pion/interceptor/pkg/packetdump"
+
+// Enable packet dumping
+recv, _ := packetdump.NewReceiverInterceptor()
+
+// Analyze logs to find:
+// - Missing sequence numbers
+// - Duplicate packets
+// - Out-of-order arrivals
+```
+
+### Performance Analysis
+
+```go
+// Track packet statistics from logs:
+type PacketStats struct {
+    Count       int
+    TotalBytes  int
+    MinSize     int
+    MaxSize     int
+    StartTime   time.Time
+    EndTime     time.Time
+}
+
+func analyzePackets(stats PacketStats) {
+    duration := stats.EndTime.Sub(stats.StartTime)
+    packetRate := float64(stats.Count) / duration.Seconds()
+    bitrate := float64(stats.TotalBytes*8) / duration.Seconds()
+    
+    fmt.Printf("Packet rate: %.2f pps\n", packetRate)
+    fmt.Printf("Bitrate: %.2f bps\n", bitrate)
+    fmt.Printf("Avg size: %d bytes\n", stats.TotalBytes/stats.Count)
+}
+```
+
+### Protocol Verification
+
+```go
+// Verify:
+// - Correct payload types
+// - Valid sequence numbers
+// - Proper timestamp increments
+// - Header extension usage
+```
+
+## Advanced Usage
+
+### Conditional Dumping
+
+While the package doesn't provide built-in filtering, you can wrap it:
+
+```go
+type FilteredDumper struct {
+    interceptor.NoOp
+    dumper      *packetdump.ReceiverInterceptor
+    targetSSRC  uint32
+}
+
+func (f *FilteredDumper) BindRemoteStream(
+    info *interceptor.StreamInfo,
+    reader interceptor.RTPReader,
+) interceptor.RTPReader {
+    if info.SSRC == f.targetSSRC {
+        // Only dump target SSRC
+        return f.dumper.BindRemoteStream(info, reader)
+    }
+    return reader
+}
+```
+
+### Sampling
+
+```go
+type SamplingDumper struct {
+    interceptor.NoOp
+    dumper      *packetdump.ReceiverInterceptor
+    counter     uint64
+    sampleRate  uint64  // Dump every Nth packet
+}
+
+func (s *SamplingDumper) BindRemoteStream(
+    info *interceptor.StreamInfo,
+    reader interceptor.RTPReader,
+) interceptor.RTPReader {
+    return interceptor.RTPReaderFunc(func(b []byte, a interceptor.Attributes) (int, interceptor.Attributes, error) {
+        n, attr, err := reader.Read(b, a)
+        
+        count := atomic.AddUint64(&s.counter, 1)
+        if count%s.sampleRate == 0 {
+            // Dump this packet
+            return s.dumper.BindRemoteStream(info, reader).Read(b, attr)
+        }
+        
+        return n, attr, err
+    })
+}
+```
+
+### Export to File
+
+```go
+import (
+    "encoding/json"
+    "os"
+    "time"
+)
+
+type PacketLog struct {
+    Timestamp   time.Time   `json:"timestamp"`
+    Direction   string      `json:"direction"`
+    PacketType  string      `json:"type"`
+    SSRC        uint32      `json:"ssrc"`
+    Sequence    uint16      `json:"sequence,omitempty"`
+    Size        int         `json:"size"`
+}
+
+type FileLogger struct {
+    file    *os.File
+    encoder *json.Encoder
+}
+
+func NewFileLogger(path string) (*FileLogger, error) {
+    f, err := os.Create(path)
+    if err != nil {
+        return nil, err
+    }
+    
+    return &FileLogger{
+        file:    f,
+        encoder: json.NewEncoder(f),
+    }, nil
+}
+
+func (l *FileLogger) LogPacket(log PacketLog) error {
+    return l.encoder.Encode(log)
+}
+
+func (l *FileLogger) Close() error {
+    return l.file.Close()
+}
+```
+
+### Integration with Monitoring
+
+```go
+import "github.com/prometheus/client_golang/prometheus"
+
+var (
+    rtpPacketsReceived = prometheus.NewCounterVec(
+        prometheus.CounterOpts{
+            Name: "rtp_packets_received_total",
+            Help: "Total RTP packets received",
+        },
+        []string{"ssrc", "payload_type"},
+    )
+    
+    rtpBytesReceived = prometheus.NewCounterVec(
+        prometheus.CounterOpts{
+            Name: "rtp_bytes_received_total",
+            Help: "Total RTP bytes received",
+        },
+        []string{"ssrc"},
+    )
+)
+
+func init() {
+    prometheus.MustRegister(rtpPacketsReceived)
+    prometheus.MustRegister(rtpBytesReceived)
+}
+
+type MetricsDumper struct {
+    interceptor.NoOp
+}
+
+func (m *MetricsDumper) BindRemoteStream(
+    info *interceptor.StreamInfo,
+    reader interceptor.RTPReader,
+) interceptor.RTPReader {
+    return interceptor.RTPReaderFunc(func(b []byte, a interceptor.Attributes) (int, interceptor.Attributes, error) {
+        n, attr, err := reader.Read(b, a)
+        if err == nil && attr != nil {
+            header, _ := attr.GetRTPHeader(b[:n])
+            
+            ssrcStr := fmt.Sprintf("%d", header.SSRC)
+            ptStr := fmt.Sprintf("%d", header.PayloadType)
+            
+            rtpPacketsReceived.WithLabelValues(ssrcStr, ptStr).Inc()
+            rtpBytesReceived.WithLabelValues(ssrcStr).Add(float64(n))
+        }
+        return n, attr, err
+    })
+}
+```
+
+## Performance Considerations
+
+### Overhead
+
+- **CPU**: Minimal per-packet logging overhead
+- **I/O**: Significant if logging to disk
+- **Memory**: Depends on logging backend buffering
+
+### Production Use
+
+**Not recommended for production:**
+- High log volume
+- I/O bottlenecks
+- Storage costs
+
+**Better alternatives:**
+- Use stats package for metrics
+- Sample packets instead of logging all
+- Enable only during debugging
+
+### Optimization
+
+```go
+// Only enable in debug mode
+if os.Getenv("DEBUG_PACKETS") == "true" {
+    recv, _ := packetdump.NewReceiverInterceptor()
+    ir.Add(recv)
+}
+```
+
+## Debugging Techniques
+
+### Finding Packet Loss
+
+```bash
+# Extract sequence numbers from logs
+grep "Sequence:" packet.log | awk '{print $2}' | sort -n > sequences.txt
+
+# Find gaps
+awk 'NR>1{if($1!=prev+1) print "Gap: "prev+1" to "$1-1}{prev=$1}' sequences.txt
+```
+
+### Analyzing Timing
+
+```bash
+# Extract timestamps
+grep "Timestamp:" packet.log > timestamps.txt
+
+# Calculate jitter
+# (difference between expected and actual arrival times)
+```
+
+### Payload Analysis
+
+```go
+// Check for payload type changes
+var lastPT uint8
+for _, pkt := range packets {
+    if pkt.PayloadType != lastPT {
+        log.Printf("Payload type changed: %d -> %d", lastPT, pkt.PayloadType)
+        lastPT = pkt.PayloadType
+    }
+}
+```
+
+## Limitations
+
+- No built-in filtering
+- No rotation or size limits
+- Not suitable for production
+- High overhead with many streams
+- No packet content inspection
+
+## See Also
+
+- [Stats Package](/api/packages/stats) - Production-ready metrics
+- [NACK Package](/api/packages/nack) - Packet loss handling
+
+## Reference
+
+For more details, see the [pkg.go.dev documentation](https://pkg.go.dev/github.com/pion/interceptor/pkg/packetdump).

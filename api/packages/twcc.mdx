@@ -1,0 +1,391 @@
+---
+title: "TWCC Package"
+description: "Transport Wide Congestion Control feedback generation and header extension"
+---
+
+The `twcc` package implements Transport Wide Congestion Control (TWCC) as specified in [draft-holmer-rmcat-transport-wide-cc-extensions-01](https://datatracker.ietf.org/doc/html/draft-holmer-rmcat-transport-wide-cc-extensions-01). It provides feedback about packet arrival times for congestion control.
+
+## Overview
+
+TWCC enables receivers to report packet arrival times to senders, allowing the sender to estimate network conditions and adjust sending rates. The package provides:
+
+- **SenderInterceptor**: Generates TWCC feedback reports
+- **HeaderExtensionInterceptor**: Adds transport sequence numbers to outgoing packets
+- **Recorder**: Tracks packet arrivals and builds feedback reports
+
+## SenderInterceptor
+
+Generates TWCC feedback reports based on received packet arrival times.
+
+### Factory
+
+```go
+type SenderInterceptorFactory struct {
+    // contains filtered or unexported fields
+}
+```
+
+### Constructor
+
+```go
+func NewSenderInterceptor(opts ...Option) (*SenderInterceptorFactory, error)
+```
+
+Creates a new TWCC sender interceptor factory.
+
+### Options
+
+#### SendInterval
+
+```go
+func SendInterval(interval time.Duration) Option
+```
+
+Sets the interval at which TWCC feedback reports are sent.
+
+<ParamField path="interval" type="time.Duration">
+  Feedback send interval. Default: 100ms
+</ParamField>
+
+#### WithLoggerFactory
+
+```go
+func WithLoggerFactory(loggerFactory logging.LoggerFactory) Option
+```
+
+Sets a custom logger factory.
+
+### Usage Example
+
+```go
+import (
+    "time"
+    "github.com/pion/interceptor"
+    "github.com/pion/interceptor/pkg/twcc"
+)
+
+// Create TWCC feedback generator
+twccSender, err := twcc.NewSenderInterceptor(
+    twcc.SendInterval(100 * time.Millisecond),
+)
+if err != nil {
+    panic(err)
+}
+
+// Add to registry
+registry := &interceptor.Registry{}
+registry.Add(twccSender)
+
+// Build interceptor
+i, err := registry.Build("peer-connection-1")
+if err != nil {
+    panic(err)
+}
+defer i.Close()
+```
+
+## HeaderExtensionInterceptor
+
+Adds transport-wide sequence numbers to outgoing RTP packets.
+
+### Factory
+
+```go
+type HeaderExtensionInterceptorFactory struct{}
+```
+
+### Constructor
+
+```go
+func NewHeaderExtensionInterceptor() (*HeaderExtensionInterceptorFactory, error)
+```
+
+Creates a new TWCC header extension interceptor factory.
+
+### Usage Example
+
+```go
+import (
+    "github.com/pion/interceptor"
+    "github.com/pion/interceptor/pkg/twcc"
+)
+
+// Create header extension interceptor
+twccHdrExt, err := twcc.NewHeaderExtensionInterceptor()
+if err != nil {
+    panic(err)
+}
+
+// Add to registry
+registry := &interceptor.Registry{}
+registry.Add(twccHdrExt)
+```
+
+## Recorder
+
+Tracks packet arrivals and builds TWCC feedback reports.
+
+### Type Definition
+
+```go
+type Recorder struct {
+    // contains filtered or unexported fields
+}
+```
+
+### Constructor
+
+```go
+func NewRecorder(senderSSRC uint32) *Recorder
+```
+
+Creates a new TWCC recorder.
+
+<ParamField path="senderSSRC" type="uint32">
+  SSRC to use in generated feedback reports
+</ParamField>
+
+### Methods
+
+#### Record
+
+```go
+func (r *Recorder) Record(
+    mediaSSRC uint32,
+    sequenceNumber uint16,
+    arrivalTime int64,
+)
+```
+
+Records a packet arrival.
+
+<ParamField path="mediaSSRC" type="uint32">
+  SSRC of the media stream
+</ParamField>
+
+<ParamField path="sequenceNumber" type="uint16">
+  Transport-wide sequence number
+</ParamField>
+
+<ParamField path="arrivalTime" type="int64">
+  Arrival time in microseconds
+</ParamField>
+
+#### PacketsHeld
+
+```go
+func (r *Recorder) PacketsHeld() int
+```
+
+**Returns:** `int` - Number of packets currently held by the recorder
+
+#### BuildFeedbackPacket
+
+```go
+func (r *Recorder) BuildFeedbackPacket() []rtcp.Packet
+```
+
+Builds TWCC feedback packets from recorded arrivals.
+
+**Returns:** `[]rtcp.Packet` - Slice of TWCC feedback packets (may be empty)
+
+## Complete Setup Example
+
+```go
+import (
+    "time"
+    "github.com/pion/interceptor"
+    "github.com/pion/interceptor/pkg/twcc"
+    "github.com/pion/webrtc/v4"
+)
+
+func setupTWCC() (*interceptor.Registry, error) {
+    registry := &interceptor.Registry{}
+    
+    // Add header extension interceptor (sender side)
+    hdrExt, err := twcc.NewHeaderExtensionInterceptor()
+    if err != nil {
+        return nil, err
+    }
+    registry.Add(hdrExt)
+    
+    // Add feedback generator (receiver side)
+    sender, err := twcc.NewSenderInterceptor(
+        twcc.SendInterval(100 * time.Millisecond),
+    )
+    if err != nil {
+        return nil, err
+    }
+    registry.Add(sender)
+    
+    return registry, nil
+}
+
+func createPeerConnection() (*webrtc.PeerConnection, error) {
+    m := &webrtc.MediaEngine{}
+    if err := m.RegisterDefaultCodecs(); err != nil {
+        return nil, err
+    }
+    
+    // Register TWCC header extension
+    const transportCCURI = "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01"
+    if err := m.RegisterHeaderExtension(
+        webrtc.RTPHeaderExtensionCapability{URI: transportCCURI},
+        webrtc.RTPCodecTypeVideo,
+    ); err != nil {
+        return nil, err
+    }
+    
+    ir, err := setupTWCC()
+    if err != nil {
+        return nil, err
+    }
+    
+    api := webrtc.NewAPI(
+        webrtc.WithMediaEngine(m),
+        webrtc.WithInterceptorRegistry(ir),
+    )
+    
+    return api.NewPeerConnection(webrtc.Configuration{})
+}
+```
+
+## Integration with GCC
+
+```go
+import (
+    "github.com/pion/interceptor"
+    "github.com/pion/interceptor/pkg/cc"
+    "github.com/pion/interceptor/pkg/gcc"
+    "github.com/pion/interceptor/pkg/twcc"
+)
+
+func setupCongestionControl() (*interceptor.Registry, error) {
+    registry := &interceptor.Registry{}
+    
+    // 1. Add TWCC header extension (sender)
+    hdrExt, _ := twcc.NewHeaderExtensionInterceptor()
+    registry.Add(hdrExt)
+    
+    // 2. Add TWCC feedback generation (receiver)
+    twccSender, _ := twcc.NewSenderInterceptor()
+    registry.Add(twccSender)
+    
+    // 3. Add congestion control with GCC (sender)
+    gccFactory := func() (cc.BandwidthEstimator, error) {
+        return gcc.NewSendSideBWE(
+            gcc.SendSideBWEInitialBitrate(1_000_000),
+        )
+    }
+    ccFactory, _ := cc.NewInterceptor(gccFactory)
+    
+    // Monitor bitrate changes
+    ccFactory.OnNewPeerConnection(func(id string, estimator cc.BandwidthEstimator) {
+        estimator.OnTargetBitrateChange(func(bitrate int) {
+            fmt.Printf("Target bitrate: %d bps\n", bitrate)
+        })
+    })
+    
+    registry.Add(ccFactory)
+    
+    return registry, nil
+}
+```
+
+## How It Works
+
+### Sender Side (Outgoing Packets)
+
+1. **HeaderExtensionInterceptor** adds a transport-wide sequence number to each outgoing packet
+2. Sequence numbers increment across all streams (not per-SSRC)
+3. Header extension ID is negotiated via SDP
+
+### Receiver Side (Incoming Packets)
+
+1. **SenderInterceptor** extracts transport sequence numbers from incoming packets
+2. Records arrival times for each sequence number
+3. Periodically builds TWCC feedback reports with:
+   - Packet arrival deltas
+   - Missing packet indications
+   - Reference time
+4. Sends feedback via RTCP
+
+### Feedback Processing (Sender)
+
+The sender receives TWCC feedback and uses it for:
+- Bandwidth estimation (with GCC or custom algorithm)
+- Congestion detection
+- Bitrate adaptation
+
+## Feedback Report Format
+
+```go
+// TransportLayerCC packet structure
+type TransportLayerCC struct {
+    SenderSSRC          uint32
+    MediaSSRC           uint32
+    BaseSequenceNumber  uint16
+    PacketStatusCount   uint16
+    ReferenceTime       uint32  // In 64ms units
+    FbPktCount          uint8
+    PacketChunks        []PacketStatusChunk
+    RecvDeltas          []*RecvDelta
+}
+```
+
+## Timing Considerations
+
+### Feedback Interval
+
+- **Fast (50-100ms)**: Quick adaptation, more RTCP overhead
+- **Normal (100-200ms)**: Balanced
+- **Slow (200ms+)**: Lower overhead, slower adaptation
+
+### Arrival Time Resolution
+
+Arrival times are recorded in microseconds but encoded in the feedback with 250µs or 1ms resolution depending on delta magnitude.
+
+## Performance Characteristics
+
+- **Memory**: Stores packet history for recent arrivals (sliding window)
+- **CPU**: Minimal per-packet overhead
+- **Bandwidth**: Feedback size depends on:
+  - Number of packets since last report
+  - Loss patterns (affects encoding efficiency)
+  - Typically 20-100 bytes per report
+
+## Debugging
+
+```go
+import (
+    "github.com/pion/logging"
+    "github.com/pion/interceptor/pkg/twcc"
+)
+
+// Create logger factory
+loggerFactory := logging.NewDefaultLoggerFactory()
+loggerFactory.DefaultLogLevel = logging.LogLevelTrace
+
+// Create interceptor with logging
+twccSender, _ := twcc.NewSenderInterceptor(
+    twcc.WithLoggerFactory(loggerFactory),
+)
+```
+
+## Limitations
+
+- Requires header extension negotiation in SDP
+- Feedback size grows with packet rate
+- Not suitable for very high packet rates without aggregation
+- Clock skew between sender and receiver can affect measurements
+
+## See Also
+
+- [GCC Package](/api/packages/gcc) - Google Congestion Control
+- [CC Package](/api/packages/cc) - Congestion control framework
+- [RFC8888 Package](/api/packages/rfc8888) - Alternative feedback format
+- [RTPFB Package](/api/packages/rtpfb) - RTP feedback processing
+
+## Reference
+
+For more details, see the [pkg.go.dev documentation](https://pkg.go.dev/github.com/pion/interceptor/pkg/twcc).

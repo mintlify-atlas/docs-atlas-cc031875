@@ -1,0 +1,170 @@
+---
+title: "Pion Interceptor"
+description: "A powerful framework for building pluggable RTP/RTCP packet processors for real-time communication software"
+---
+
+# Pion Interceptor
+
+Pion Interceptor is a framework for building RTP/RTCP communication software. It provides a simple interface for creating interceptors that can inspect, modify, or generate RTP and RTCP packets as they flow through your real-time communication system.
+
+<CardGroup cols={2}>
+  <Card title="Installation" icon="download" href="/installation">
+    Get started by installing the Pion Interceptor library in your Go project
+  </Card>
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Build your first interceptor in minutes with a working example
+  </Card>
+  <Card title="GitHub Repository" icon="github" href="https://github.com/pion/interceptor">
+    View source code, examples, and contribute to the project
+  </Card>
+  <Card title="API Reference" icon="book" href="https://pkg.go.dev/github.com/pion/interceptor">
+    Browse the complete API documentation on pkg.go.dev
+  </Card>
+</CardGroup>
+
+## What is an Interceptor?
+
+An interceptor is a component that sits in the data path of your RTP/RTCP streams. Each interceptor can:
+
+- **Inspect** incoming and outgoing packets
+- **Modify** packet headers and payloads
+- **Generate** new packets (like RTCP feedback)
+- **Store** metadata using the Attributes system
+
+Interceptors are chained together sequentially, allowing you to compose complex packet processing pipelines from simple, focused components.
+
+## Core Capabilities
+
+<CardGroup cols={2}>
+  <Card title="RTP Processing" icon="wave-square">
+    Intercept and modify RTP packets for both local (outgoing) and remote (incoming) streams
+  </Card>
+  <Card title="RTCP Processing" icon="signal">
+    Process RTCP feedback packets to implement congestion control and quality monitoring
+  </Card>
+  <Card title="Stream Lifecycle" icon="circle-nodes">
+    React to stream creation and removal events to manage per-stream state
+  </Card>
+  <Card title="Composable" icon="layer-group">
+    Chain multiple interceptors together to build sophisticated processing pipelines
+  </Card>
+</CardGroup>
+
+## Built-in Interceptors
+
+Pion Interceptor comes with a rich set of production-ready interceptors:
+
+<CardGroup cols={2}>
+  <Card title="NACK" icon="rotate-left">
+    Automatic retransmission for lost packets using Negative Acknowledgments
+  </Card>
+  <Card title="Sender/Receiver Reports" icon="chart-line">
+    Generate and process RTCP SR/RR packets for quality monitoring
+  </Card>
+  <Card title="Transport-CC" icon="gauge-high">
+    Transport-wide congestion control feedback for bandwidth estimation
+  </Card>
+  <Card title="Google Congestion Control" icon="traffic-light">
+    Full GCC implementation with bandwidth estimation and probing
+  </Card>
+  <Card title="Stats" icon="chart-bar">
+    WebRTC-compliant statistics generation for monitoring
+  </Card>
+  <Card title="FlexFEC" icon="shield">
+    Forward error correction using the FlexFEC-03 specification
+  </Card>
+  <Card title="Packet Dump" icon="file-code">
+    Debug tool to log all RTP/RTCP packets flowing through the system
+  </Card>
+  <Card title="Interval PLI" icon="clock">
+    Generate periodic Picture Loss Indication when no decoder is available
+  </Card>
+</CardGroup>
+
+## Design Philosophy
+
+Pion Interceptor was built with the following principles:
+
+<Steps>
+  <Step title="Useful Defaults">
+    Each interceptor comes configured to provide a great out-of-the-box experience
+  </Step>
+  <Step title="Unblock Unique Use Cases">
+    The flexible architecture empowers you to build custom solutions for novel applications
+  </Step>
+  <Step title="Encourage Modification">
+    Add your own interceptors without forking, mixing them with built-in ones
+  </Step>
+  <Step title="Empower Learning">
+    The codebase is designed to be readable and educational, even if you're not using Pion
+  </Step>
+</Steps>
+
+## The Interceptor Interface
+
+All interceptors implement a simple interface with four main method groups:
+
+```go
+type Interceptor interface {
+    // RTCP packet processing
+    BindRTCPReader(reader RTCPReader) RTCPReader
+    BindRTCPWriter(writer RTCPWriter) RTCPWriter
+
+    // RTP stream processing
+    BindLocalStream(info *StreamInfo, writer RTPWriter) RTPWriter
+    BindRemoteStream(info *StreamInfo, reader RTPReader) RTPReader
+
+    // Stream lifecycle
+    UnbindLocalStream(info *StreamInfo)
+    UnbindRemoteStream(info *StreamInfo)
+
+    // Cleanup
+    Close() error
+}
+```
+
+<Info>
+You don't need to implement all methods. Use the `NoOp` interceptor as an embedded base, then override only the methods you need.
+</Info>
+
+## Use Cases
+
+Pion Interceptor is perfect for:
+
+- Building WebRTC applications with custom packet processing
+- Implementing congestion control algorithms
+- Adding forward error correction
+- Collecting quality metrics and statistics
+- Debugging RTP/RTCP streams
+- Building SFUs (Selective Forwarding Units)
+- Implementing custom retransmission strategies
+
+## Built for Pion WebRTC
+
+While Interceptor was originally built for [pion/webrtc](https://github.com/pion/webrtc), it's designed to be consumable by any Go application that processes RTP/RTCP packets. The library has no hard dependency on the WebRTC stack.
+
+## Community and Support
+
+<CardGroup cols={2}>
+  <Card title="Discord Community" icon="discord" href="https://discord.gg/PngbdqpFbt">
+    Join the active Pion community for help and discussions
+  </Card>
+  <Card title="Bluesky" icon="cloud" href="https://bsky.app/profile/pion.ly">
+    Follow for project updates and WebRTC news
+  </Card>
+</CardGroup>
+
+<Note>
+Need commercial support or have a project to build? Contact the Pion team at [team@pion.ly](mailto:team@pion.ly)
+</Note>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Install the Library" icon="download" href="/installation">
+    Add Pion Interceptor to your Go project
+  </Card>
+  <Card title="Build Your First Interceptor" icon="code" href="/quickstart">
+    Follow the quick start guide to create a working example
+  </Card>
+</CardGroup>

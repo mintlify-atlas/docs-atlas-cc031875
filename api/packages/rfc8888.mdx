@@ -1,0 +1,445 @@
+---
+title: "RFC8888 Package"
+description: "RTP Control Protocol Congestion Control Feedback (RFC 8888)"
+---
+
+The `rfc8888` package implements RFC 8888, providing congestion control feedback with explicit acknowledgment of RTP packets including arrival times and ECN information.
+
+## Overview
+
+RFC 8888 defines a detailed congestion control feedback format that includes:
+- **Packet Acknowledgments**: Explicit per-packet reception confirmation
+- **Arrival Times**: Precise timing information for each packet
+- **ECN Bits**: Explicit Congestion Notification status
+- **Loss Detection**: Clear indication of missing packets
+
+Compared to TWCC, RFC 8888 provides more detailed feedback at the cost of larger packet size.
+
+## SenderInterceptor
+
+Generates RFC 8888 congestion control feedback reports.
+
+### Factory
+
+```go
+type SenderInterceptorFactory struct {
+    // contains filtered or unexported fields
+}
+```
+
+### Constructor
+
+```go
+func NewSenderInterceptor(opts ...Option) (*SenderInterceptorFactory, error)
+```
+
+Creates a new RFC 8888 sender interceptor factory.
+
+### Options
+
+#### Interval
+
+```go
+func Interval(interval time.Duration) Option
+```
+
+Sets how often feedback reports are sent.
+
+<ParamField path="interval" type="time.Duration">
+  Feedback interval. Default: 100ms
+</ParamField>
+
+#### MaxReportSize
+
+```go
+func MaxReportSize(size int64) Option
+```
+
+Sets the maximum size of feedback reports.
+
+<ParamField path="size" type="int64">
+  Maximum report size in bytes. Default: 1200
+</ParamField>
+
+#### WithLoggerFactory
+
+```go
+func WithLoggerFactory(loggerFactory logging.LoggerFactory) Option
+```
+
+Sets a custom logger factory.
+
+## Usage Example
+
+### Basic Setup
+
+```go
+import (
+    "time"
+    "github.com/pion/interceptor"
+    "github.com/pion/interceptor/pkg/rfc8888"
+)
+
+// Create RFC 8888 feedback generator
+rfc8888Int, err := rfc8888.NewSenderInterceptor(
+    rfc8888.Interval(100 * time.Millisecond),
+    rfc8888.MaxReportSize(1200),
+)
+if err != nil {
+    panic(err)
+}
+
+// Add to registry
+registry := &interceptor.Registry{}
+registry.Add(rfc8888Int)
+
+// Build interceptor
+i, err := registry.Build("peer-connection-1")
+if err != nil {
+    panic(err)
+}
+defer i.Close()
+```
+
+### WebRTC Integration
+
+```go
+import (
+    "time"
+    "github.com/pion/interceptor"
+    "github.com/pion/interceptor/pkg/rfc8888"
+    "github.com/pion/webrtc/v4"
+)
+
+func setupRFC8888() (*webrtc.PeerConnection, error) {
+    m := &webrtc.MediaEngine{}
+    if err := m.RegisterDefaultCodecs(); err != nil {
+        return nil, err
+    }
+    
+    ir := &interceptor.Registry{}
+    
+    // Add RFC 8888 feedback
+    rfc8888Int, _ := rfc8888.NewSenderInterceptor(
+        rfc8888.Interval(100 * time.Millisecond),
+    )
+    ir.Add(rfc8888Int)
+    
+    api := webrtc.NewAPI(
+        webrtc.WithMediaEngine(m),
+        webrtc.WithInterceptorRegistry(ir),
+    )
+    
+    return api.NewPeerConnection(webrtc.Configuration{})
+}
+```
+
+## Feedback Report Structure
+
+RFC 8888 CCFeedbackReport structure:
+
+```go
+type CCFeedbackReport struct {
+    SenderSSRC        uint32
+    MediaSSRC         uint32  
+    ReportTimestamp   uint32  // In NTP short format (1/65536 seconds)
+    EcnCounts         ECNCounts
+    PacketReports     []PacketReport
+}
+
+type PacketReport struct {
+    SequenceNumber    uint16
+    ArrivalTimeOffset uint16  // Microseconds from ReportTimestamp
+    ECN               uint8   // ECN bits (0-3)
+}
+```
+
+## How It Works
+
+### Packet Recording
+
+1. **Receive RTP**: Track each incoming packet
+2. **Record Details**:
+   - Sequence number
+   - Arrival time (high precision)
+   - ECN status (if supported)
+   - SSRC
+
+### Report Generation
+
+1. **Periodic Trigger**: Every `Interval` milliseconds
+2. **Build Report**: 
+   - Group packets by SSRC
+   - Calculate relative timestamps
+   - Add ECN counts
+3. **Size Limit**: Split into multiple reports if exceeds `MaxReportSize`
+4. **Send RTCP**: Transmit via RTCP channel
+
+### Report Processing (Receiver)
+
+The sender receives RFC 8888 feedback and can:
+- Calculate one-way delay
+- Detect packet loss
+- Monitor ECN signals
+- Adjust sending rate
+
+## Integration with GCC
+
+```go
+import (
+    "github.com/pion/interceptor"
+    "github.com/pion/interceptor/pkg/cc"
+    "github.com/pion/interceptor/pkg/gcc"
+    "github.com/pion/interceptor/pkg/rfc8888"
+)
+
+func setupCongestionControl() (*interceptor.Registry, error) {
+    registry := &interceptor.Registry{}
+    
+    // Add RFC 8888 feedback (receiver side)
+    rfc8888Int, _ := rfc8888.NewSenderInterceptor(
+        rfc8888.Interval(100 * time.Millisecond),
+    )
+    registry.Add(rfc8888Int)
+    
+    // Add GCC with RFC 8888 support (sender side)
+    gccFactory := func() (cc.BandwidthEstimator, error) {
+        return gcc.NewSendSideBWE(
+            gcc.SendSideBWEInitialBitrate(1_000_000),
+        )
+    }
+    ccFactory, _ := cc.NewInterceptor(gccFactory)
+    
+    ccFactory.OnNewPeerConnection(func(id string, estimator cc.BandwidthEstimator) {
+        estimator.OnTargetBitrateChange(func(bitrate int) {
+            log.Printf("Target bitrate: %d bps", bitrate)
+        })
+    })
+    
+    registry.Add(ccFactory)
+    
+    return registry, nil
+}
+```
+
+## Comparison with TWCC
+
+### RFC 8888
+
+**Advantages:**
+- More detailed feedback
+- Explicit packet acknowledgments
+- ECN support
+- Better for loss detection
+
+**Disadvantages:**
+- Larger feedback packets
+- More bandwidth overhead
+- More complex processing
+
+### TWCC (Transport-Wide Congestion Control)
+
+**Advantages:**
+- Compact encoding
+- Lower bandwidth overhead
+- Widely supported
+- Simpler processing
+
+**Disadvantages:**
+- No explicit ECN
+- Less detail per packet
+- Requires header extension
+
+### Size Comparison
+
+```
+For 50 packets:
+RFC 8888: ~500-600 bytes (10-12 bytes per packet)
+TWCC:     ~200-300 bytes (4-6 bytes per packet)
+```
+
+## Advanced Configuration
+
+### Adaptive Interval
+
+```go
+import "github.com/pion/interceptor/pkg/stats"
+
+func adaptiveInterval(statsGetter stats.Getter, ssrc uint32) time.Duration {
+    s := statsGetter.Get(ssrc)
+    if s == nil {
+        return 100 * time.Millisecond
+    }
+    
+    // Faster feedback on high packet rates
+    if s.PacketsReceived > 1000 {
+        return 50 * time.Millisecond
+    }
+    
+    // Slower feedback on low packet rates  
+    if s.PacketsReceived < 100 {
+        return 200 * time.Millisecond
+    }
+    
+    return 100 * time.Millisecond
+}
+```
+
+### Dynamic Report Size
+
+```go
+func calculateMaxReportSize(mtu int) int64 {
+    // Leave room for IP/UDP/RTP headers
+    overhead := 60 // IP + UDP + RTP headers
+    available := mtu - overhead
+    
+    // Use 80% of available space
+    return int64(float64(available) * 0.8)
+}
+
+mtu := 1500
+maxSize := calculateMaxReportSize(mtu)
+
+rfc8888Int, _ := rfc8888.NewSenderInterceptor(
+    rfc8888.MaxReportSize(maxSize),
+)
+```
+
+## ECN Support
+
+RFC 8888 includes ECN (Explicit Congestion Notification) support:
+
+```go
+// ECN bits in IP header:
+// 00 - Not-ECT (Not ECN-Capable Transport)
+// 01 - ECT(1) (ECN-Capable Transport)
+// 10 - ECT(0) (ECN-Capable Transport)  
+// 11 - CE (Congestion Experienced)
+
+// In RFC 8888 report:
+type PacketReport struct {
+    SequenceNumber    uint16
+    ArrivalTimeOffset uint16
+    ECN               uint8  // 0-3
+}
+```
+
+Note: ECN extraction from packets is not currently implemented in the interceptor.
+
+## Performance Characteristics
+
+### Bandwidth Overhead
+
+```go
+// Calculate overhead
+func calculateOverhead(packetRate float64, interval time.Duration) float64 {
+    packetsPerReport := packetRate * interval.Seconds()
+    reportSize := 28 + (packetsPerReport * 10) // Header + per-packet data
+    reportsPerSecond := 1.0 / interval.Seconds()
+    bytesPerSecond := reportSize * reportsPerSecond
+    bitsPerSecond := bytesPerSecond * 8
+    
+    return bitsPerSecond
+}
+
+// Example: 50 fps video
+overhead := calculateOverhead(50, 100*time.Millisecond)
+// ~4000 bps (~4 Kbps) overhead
+```
+
+### CPU Usage
+
+- Per-packet recording: O(1)
+- Report generation: O(n) where n = packets since last report
+- Minimal CPU overhead
+
+### Memory
+
+- Stores packet info until next report
+- Memory usage: ~20 bytes per recorded packet
+- At 50 fps with 100ms interval: ~100 bytes
+
+## Debugging
+
+```go
+import "github.com/pion/logging"
+
+loggerFactory := logging.NewDefaultLoggerFactory()
+loggerFactory.DefaultLogLevel = logging.LogLevelTrace
+
+rfc8888Int, _ := rfc8888.NewSenderInterceptor(
+    rfc8888.WithLoggerFactory(loggerFactory),
+)
+
+// Logs will show:
+// - Packets recorded
+// - Reports generated
+// - Report sizes
+// - Timing information
+```
+
+## Use Cases
+
+### High-Precision Congestion Control
+
+```go
+// RFC 8888 provides more accurate timing
+// Useful for research or specialized applications
+rfc8888Int, _ := rfc8888.NewSenderInterceptor(
+    rfc8888.Interval(50 * time.Millisecond), // Fast feedback
+)
+```
+
+### ECN-Aware Applications
+
+```go
+// When network supports ECN
+// RFC 8888 can report ECN marks
+// (requires OS-level ECN support)
+```
+
+### Detailed Loss Analysis
+
+```go
+// Explicit per-packet feedback
+// Better for understanding loss patterns
+```
+
+## Limitations
+
+- Larger feedback packets than TWCC
+- More bandwidth overhead
+- ECN extraction not implemented
+- Limited browser support (compared to TWCC)
+- Requires RTCP negotiation
+
+## Migration from TWCC
+
+```go
+// Before (TWCC)
+twccSender, _ := twcc.NewSenderInterceptor()
+registry.Add(twccSender)
+
+// After (RFC 8888)
+rfc8888Int, _ := rfc8888.NewSenderInterceptor(
+    rfc8888.Interval(100 * time.Millisecond),
+)
+registry.Add(rfc8888Int)
+
+// Note: Both can coexist
+registry.Add(twccSender)    // For TWCC-capable receivers
+registry.Add(rfc8888Int)     // For RFC 8888-capable receivers
+```
+
+## See Also
+
+- [TWCC Package](/api/packages/twcc) - Alternative congestion control feedback
+- [GCC Package](/api/packages/gcc) - Bandwidth estimation
+- [CC Package](/api/packages/cc) - Congestion control framework
+- [RTPFB Package](/api/packages/rtpfb) - RTP feedback processing
+
+## Reference
+
+For more details, see:
+- [pkg.go.dev documentation](https://pkg.go.dev/github.com/pion/interceptor/pkg/rfc8888)
+- [RFC 8888](https://datatracker.ietf.org/doc/html/rfc8888)

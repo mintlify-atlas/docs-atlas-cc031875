@@ -1,0 +1,440 @@
+---
+title: FlexFEC Interceptor
+description: Forward error correction for packet loss recovery
+---
+
+The FlexFEC interceptor implements forward error correction (FEC) to recover lost packets without retransmission. It generates redundant FEC packets that can be used to reconstruct missing media packets.
+
+## Overview
+
+FlexFEC provides:
+
+- **Proactive recovery**: Repairs packet loss without round-trip delay
+- **Flexible protection**: Configurable redundancy levels
+- **FlexFEC-03 support**: Compatible with Chrome and other WebRTC implementations
+- **Automatic generation**: Seamlessly creates FEC packets
+
+<Info>
+FlexFEC is specified in [draft-ietf-payload-flexible-fec-scheme](https://datatracker.ietf.org/doc/html/draft-ietf-payload-flexible-fec-scheme) and commonly used for video streaming.
+</Info>
+
+## Basic Usage
+
+```go
+import (
+    "github.com/pion/interceptor"
+    "github.com/pion/interceptor/pkg/flexfec"
+)
+
+// Create FlexFEC interceptor
+fecFactory, err := flexfec.NewFecInterceptor(
+    flexfec.NumMediaPackets(5),  // Protect every 5 media packets
+    flexfec.NumFECPackets(2),     // Generate 2 FEC packets
+)
+if err != nil {
+    panic(err)
+}
+
+// Register with interceptor registry
+m := &interceptor.Registry{}
+m.Add(fecFactory)
+```
+
+## Configuration Options
+
+### NumMediaPackets
+
+Sets how many media packets to accumulate before generating FEC packets:
+
+```go
+fecFactory, err := flexfec.NewFecInterceptor(
+    flexfec.NumMediaPackets(5), // Default: 5
+)
+```
+
+<Note>
+Smaller values provide more frequent protection but higher overhead. Typical values: 5-10 packets.
+</Note>
+
+### NumFECPackets
+
+Sets how many FEC packets to generate for each block of media packets:
+
+```go
+fecFactory, err := flexfec.NewFecInterceptor(
+    flexfec.NumFECPackets(2), // Default: 2
+)
+```
+
+**Protection levels:**
+- 1 FEC packet: Can recover 1 lost media packet (20% overhead for 5 media)
+- 2 FEC packets: Can recover 2 lost media packets (40% overhead for 5 media)
+- 3 FEC packets: Can recover 3 lost media packets (60% overhead for 5 media)
+
+### FECEncoderFactory
+
+Provide a custom FEC encoder implementation:
+
+```go
+fecFactory, err := flexfec.NewFecInterceptor(
+    flexfec.FECEncoderFactory(customFactory),
+)
+```
+
+## Complete Example
+
+```go
+package main
+
+import (
+    "log"
+    
+    "github.com/pion/interceptor"
+    "github.com/pion/interceptor/pkg/flexfec"
+    "github.com/pion/webrtc/v4"
+)
+
+func main() {
+    // Create media engine
+    m := &webrtc.MediaEngine{}
+    if err := m.RegisterDefaultCodecs(); err != nil {
+        panic(err)
+    }
+    
+    // Create interceptor registry
+    i := &interceptor.Registry{}
+    
+    // Configure FlexFEC
+    // Protect 5 media packets with 2 FEC packets
+    // This provides ~40% overhead and can recover up to 2 lost packets
+    fecFactory, err := flexfec.NewFecInterceptor(
+        flexfec.NumMediaPackets(5),
+        flexfec.NumFECPackets(2),
+    )
+    if err != nil {
+        panic(err)
+    }
+    i.Add(fecFactory)
+    
+    // Create API with FEC support
+    api := webrtc.NewAPI(
+        webrtc.WithMediaEngine(m),
+        webrtc.WithInterceptorRegistry(i),
+    )
+    
+    // Create peer connection
+    pc, err := api.NewPeerConnection(webrtc.Configuration{})
+    if err != nil {
+        panic(err)
+    }
+    defer pc.Close()
+    
+    // Add video track with FEC parameters
+    track, err := webrtc.NewTrackLocalStaticSample(
+        webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8},
+        "video",
+        "pion",
+    )
+    if err != nil {
+        panic(err)
+    }
+    
+    _, err = pc.AddTrack(track)
+    if err != nil {
+        panic(err)
+    }
+    
+    log.Println("FlexFEC configured successfully")
+}
+```
+
+## How FlexFEC Works
+
+### Encoding Process
+
+1. **Accumulate**: Collect N media packets
+2. **Generate**: Create K FEC packets using XOR-based coding
+3. **Transmit**: Send both media and FEC packets
+4. **Decode**: Receiver uses FEC to recover lost media packets
+
+```
+Media packets:  [P1] [P2] [P3] [P4] [P5]
+                  |    |    |    |    |
+                  v    v    v    v    v
+                 XOR based encoding
+                          |
+                          v
+FEC packets:          [F1] [F2]
+```
+
+### Recovery Capability
+
+```go
+// Example: 5 media + 2 FEC packets
+// Can recover:
+// - Any 1 lost packet: ✓
+// - Any 2 lost packets: ✓  
+// - 3+ lost packets: ✗ (not enough FEC)
+
+// Lost packets ≤ FEC packets: Recoverable
+// Lost packets > FEC packets: Unrecoverable
+```
+
+<Warning>
+FlexFEC can only recover up to K lost packets per block, where K is the number of FEC packets generated.
+</Warning>
+
+## Protection Levels
+
+### Light Protection (Low Overhead)
+
+```go
+// 10 media + 1 FEC = 10% overhead
+// Can recover 1 lost packet per 10
+fecFactory, _ := flexfec.NewFecInterceptor(
+    flexfec.NumMediaPackets(10),
+    flexfec.NumFECPackets(1),
+)
+```
+
+**Use for:** Good networks with occasional loss (< 5%)
+
+### Medium Protection (Balanced)
+
+```go
+// 5 media + 2 FEC = 40% overhead  
+// Can recover 2 lost packets per 5
+fecFactory, _ := flexfec.NewFecInterceptor(
+    flexfec.NumMediaPackets(5),
+    flexfec.NumFECPackets(2),
+)
+```
+
+**Use for:** Typical networks with moderate loss (5-10%)
+
+### Heavy Protection (High Overhead)
+
+```go
+// 3 media + 2 FEC = 67% overhead
+// Can recover 2 lost packets per 3  
+fecFactory, _ := flexfec.NewFecInterceptor(
+    flexfec.NumMediaPackets(3),
+    flexfec.NumFECPackets(2),
+)
+```
+
+**Use for:** Poor networks with high loss (10-20%)
+
+## Calculating Overhead
+
+```go
+func calculateOverhead(mediaPackets, fecPackets uint32) float64 {
+    return float64(fecPackets) / float64(mediaPackets) * 100
+}
+
+// Examples:
+overhead := calculateOverhead(5, 2)  // 40%
+overhead := calculateOverhead(10, 1) // 10%
+overhead := calculateOverhead(3, 2)  // 67%
+```
+
+## SDP Configuration
+
+FlexFEC requires proper SDP negotiation:
+
+```sdp
+m=video 9 UDP/TLS/RTP/SAVPF 96 100
+a=rtpmap:96 VP8/90000
+a=rtpmap:100 flexfec-03/90000
+a=fmtp:100 repair-window=10000000
+```
+
+Pion handles this automatically when FlexFEC is configured.
+
+## Integration Patterns
+
+### With NACK
+
+Combine FEC and retransmission for robust recovery:
+
+```go
+import (
+    "github.com/pion/interceptor/pkg/flexfec"
+    "github.com/pion/interceptor/pkg/nack"
+)
+
+// Add FlexFEC for fast recovery
+fecFactory, _ := flexfec.NewFecInterceptor(
+    flexfec.NumMediaPackets(5),
+    flexfec.NumFECPackets(1),
+)
+i.Add(fecFactory)
+
+// Add NACK as backup
+generatorFactory, _ := nack.NewGeneratorInterceptor()
+i.Add(generatorFactory)
+
+responderFactory, _ := nack.NewResponderInterceptor()
+i.Add(responderFactory)
+
+// Result: FEC recovers most losses instantly,
+// NACK handles remaining losses via retransmission
+```
+
+### With Adaptive Bitrate
+
+```go
+import (
+    "github.com/pion/interceptor/pkg/flexfec"
+    "github.com/pion/interceptor/pkg/gcc"
+)
+
+// Monitor packet loss
+bwe, _ := gcc.NewSendSideBWE()
+
+bwe.OnTargetBitrateChange(func(bitrate int) {
+    stats := bwe.GetStats()
+    loss := stats["averageLoss"].(float64)
+    
+    // Adjust FEC based on loss
+    if loss > 0.10 {
+        // Increase protection in high loss
+        log.Println("High loss detected, consider more FEC")
+    } else if loss < 0.02 {
+        // Reduce overhead in good conditions  
+        log.Println("Low loss, FEC overhead could be reduced")
+    }
+})
+```
+
+## Performance Impact
+
+### CPU Usage
+
+- **Encoding**: ~2-5% CPU per stream (depends on packet size)
+- **Decoding**: ~1-3% CPU per stream
+- **Overhead**: Increases with packet rate
+
+### Bandwidth Overhead
+
+```go
+// Calculate bandwidth overhead
+func bandwidthOverhead(mediaRate float64, numMedia, numFEC uint32) float64 {
+    overhead := float64(numFEC) / float64(numMedia)
+    return mediaRate * overhead
+}
+
+// Example: 2 Mbps stream with 5+2 configuration
+overheadBW := bandwidthOverhead(2_000_000, 5, 2) // 800 Kbps additional
+totalBW := 2_000_000 + overheadBW                // 2.8 Mbps total
+```
+
+### Latency
+
+- **Encoding delay**: Minimal (< 1ms)
+- **Block delay**: Time to collect media packets
+  - 5 packets at 30fps: ~167ms
+  - 5 packets at 60fps: ~83ms
+
+<Info>
+FEC adds less latency than NACK retransmission (no round-trip time), making it ideal for real-time applications.
+</Info>
+
+## Choosing Configuration
+
+### Based on Network Conditions
+
+```go
+func chooseFECConfig(estimatedLoss float64) (uint32, uint32) {
+    switch {
+    case estimatedLoss < 0.05:
+        return 10, 1  // Light protection
+    case estimatedLoss < 0.10:
+        return 5, 2   // Medium protection
+    default:
+        return 3, 2   // Heavy protection
+    }
+}
+
+mediaPackets, fecPackets := chooseFECConfig(0.08)
+fecFactory, _ := flexfec.NewFecInterceptor(
+    flexfec.NumMediaPackets(mediaPackets),
+    flexfec.NumFECPackets(fecPackets),
+)
+```
+
+### Based on Content Type
+
+```go
+// Voice (low bitrate, bursty loss)
+voiceFEC, _ := flexfec.NewFecInterceptor(
+    flexfec.NumMediaPackets(10),
+    flexfec.NumFECPackets(2),
+)
+
+// Video (high bitrate, continuous)
+videoFEC, _ := flexfec.NewFecInterceptor(
+    flexfec.NumMediaPackets(5),
+    flexfec.NumFECPackets(2),
+)
+
+// Screen sharing (bursty, loss sensitive)
+screenFEC, _ := flexfec.NewFecInterceptor(
+    flexfec.NumMediaPackets(3),
+    flexfec.NumFECPackets(2),
+)
+```
+
+## Best Practices
+
+1. **Start Conservative**: Begin with 5+2 configuration
+2. **Monitor Loss**: Adjust based on actual packet loss rates
+3. **Consider Latency**: Smaller blocks reduce latency but increase overhead
+4. **Bandwidth Budget**: Account for FEC in bitrate calculations
+5. **Combine Strategies**: Use with NACK for comprehensive protection
+
+<Note>
+FlexFEC works best for packet loss between 5-20%. Below 5%, the overhead may not be justified. Above 20%, consider network improvements.
+</Note>
+
+## Limitations
+
+- Can only recover up to K lost packets per block
+- Requires additional bandwidth (overhead)
+- Not effective for very high loss rates (> 30%)
+- Introduces slight latency (block collection time)
+
+## Troubleshooting
+
+<Accordion title="FEC packets not generated">
+Check:
+1. Stream has FEC SSRC configured
+2. Stream has FEC payload type configured  
+3. Media packets are flowing
+4. Enough packets collected for a block
+</Accordion>
+
+<Accordion title="High bandwidth usage">
+Reduce FEC overhead:
+1. Increase NumMediaPackets
+2. Decrease NumFECPackets
+3. Use FEC only when needed
+</Accordion>
+
+<Accordion title="Still experiencing packet loss">
+Possible causes:
+1. Loss exceeds FEC protection level
+2. Burst losses larger than recovery capability
+3. FEC packets also getting lost
+
+Solutions:
+- Increase NumFECPackets
+- Add NACK as backup
+- Reduce media bitrate
+</Accordion>
+
+## Related Interceptors
+
+- [NACK](/interceptors/nack) - Complementary retransmission-based recovery
+- [Jitter Buffer](/interceptors/jitterbuffer) - Smooth packet arrival
+- [Stats](/interceptors/stats) - Monitor loss and recovery rates

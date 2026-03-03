@@ -1,0 +1,604 @@
+---
+title: Packet Dump Interceptor
+description: Dump RTP and RTCP packets for debugging and analysis
+---
+
+The Packet Dump interceptor logs RTP and RTCP packets to help with debugging, analysis, and protocol inspection. It supports flexible filtering and custom formatting.
+
+## Overview
+
+The Packet Dump interceptor provides:
+
+- **Sender and Receiver**: Separate interceptors for outgoing and incoming packets
+- **RTP and RTCP**: Logs both media and control packets
+- **Flexible Output**: Write to files, stdout, or custom writers
+- **Filtering**: Filter packets by SSRC, payload type, or custom logic
+- **Formatting**: JSON, binary, or custom formats
+
+<Info>
+Packet dumping is useful for debugging connection issues, analyzing protocols, and troubleshooting packet loss.
+</Info>
+
+## Components
+
+Two separate interceptors are available:
+
+1. **SenderInterceptor**: Logs outgoing RTP/RTCP packets
+2. **ReceiverInterceptor**: Logs incoming RTP/RTCP packets
+
+## Basic Usage
+
+### Sender Interceptor
+
+```go
+import (
+    "os"
+    "github.com/pion/interceptor"
+    "github.com/pion/interceptor/pkg/packetdump"
+)
+
+// Create output file
+rtpFile, err := os.Create("rtp_output.bin")
+if err != nil {
+    panic(err)
+}
+defer rtpFile.Close()
+
+// Create sender interceptor
+senderFactory, err := packetdump.NewSenderInterceptor(
+    packetdump.RTPWriter(rtpFile),
+)
+if err != nil {
+    panic(err)
+}
+
+// Register with interceptor registry
+m := &interceptor.Registry{}
+m.Add(senderFactory)
+```
+
+### Receiver Interceptor
+
+```go
+// Create receiver interceptor  
+receiverFactory, err := packetdump.NewReceiverInterceptor(
+    packetdump.RTPWriter(rtpFile),
+    packetdump.RTCPWriter(rtcpFile),
+)
+if err != nil {
+    panic(err)
+}
+
+m.Add(receiverFactory)
+```
+
+## Configuration Options
+
+### RTPWriter / RTCPWriter
+
+Specify where to write packets:
+
+```go
+import "os"
+
+// Write to files
+rtpFile, _ := os.Create("rtp.bin")
+rtcpFile, _ := os.Create("rtcp.bin")
+
+factory, err := packetdump.NewSenderInterceptor(
+    packetdump.RTPWriter(rtpFile),
+    packetdump.RTCPWriter(rtcpFile),
+)
+
+// Write to stdout
+factory, err := packetdump.NewSenderInterceptor(
+    packetdump.RTPWriter(os.Stdout),
+)
+```
+
+### PacketLog
+
+Provide a custom packet logger:
+
+```go
+type CustomLogger struct{}
+
+func (l *CustomLogger) LogRTP(header *rtp.Header, payload []byte, attributes interceptor.Attributes) {
+    // Custom RTP logging
+    log.Printf("RTP: SSRC=%d, Seq=%d, Size=%d",
+        header.SSRC, header.SequenceNumber, len(payload))
+}
+
+func (l *CustomLogger) LogRTCP(packets []rtcp.Packet, attributes interceptor.Attributes) {
+    // Custom RTCP logging
+    for _, pkt := range packets {
+        log.Printf("RTCP: %T", pkt)
+    }
+}
+
+factory, err := packetdump.NewSenderInterceptor(
+    packetdump.PacketLog(&CustomLogger{}),
+)
+```
+
+### Binary Formatters
+
+Customize binary output format:
+
+```go
+factory, err := packetdump.NewSenderInterceptor(
+    packetdump.RTPBinaryFormatter(func(header *rtp.Header, payload []byte, attributes interceptor.Attributes) []byte {
+        // Custom binary format
+        // Example: prepend length and timestamp
+        length := uint16(len(payload))
+        timestamp := time.Now().Unix()
+        
+        buf := make([]byte, 2+8+len(payload))
+        binary.BigEndian.PutUint16(buf[0:2], length)
+        binary.BigEndian.PutUint64(buf[2:10], uint64(timestamp))
+        copy(buf[10:], payload)
+        
+        return buf
+    }),
+)
+```
+
+### Filters
+
+Filter which packets to log:
+
+```go
+// RTP filter - only log video packets
+factory, err := packetdump.NewSenderInterceptor(
+    packetdump.RTPFilter(func(header *rtp.Header, payload []byte, attributes interceptor.Attributes) bool {
+        // Only log if payload type is 96 (VP8)
+        return header.PayloadType == 96
+    }),
+)
+
+// RTCP per-packet filter
+factory, err := packetdump.NewSenderInterceptor(
+    packetdump.RTCPPerPacketFilter(func(pkt rtcp.Packet, attributes interceptor.Attributes) bool {
+        // Only log NACK packets
+        _, isNACK := pkt.(*rtcp.TransportLayerNack)
+        return isNACK
+    }),
+)
+```
+
+### Logging
+
+Configure interceptor logging:
+
+```go
+factory, err := packetdump.NewSenderInterceptor(
+    packetdump.WithLoggerFactory(loggerFactory),
+)
+```
+
+## Complete Example
+
+```go
+package main
+
+import (
+    "encoding/json"
+    "log"
+    "os"
+    "time"
+    
+    "github.com/pion/interceptor"
+    "github.com/pion/interceptor/pkg/packetdump"
+    "github.com/pion/webrtc/v4"
+)
+
+func main() {
+    // Create output files
+    rtpFile, err := os.Create("rtp_dump.bin")
+    if err != nil {
+        panic(err)
+    }
+    defer rtpFile.Close()
+    
+    rtcpFile, err := os.Create("rtcp_dump.json")
+    if err != nil {
+        panic(err)
+    }
+    defer rtcpFile.Close()
+    
+    // Create custom RTCP formatter for JSON output
+    rtcpFormatter := func(pkts []rtcp.Packet, attr interceptor.Attributes) []byte {
+        data := map[string]any{
+            "timestamp": time.Now(),
+            "packets":   make([]map[string]any, 0),
+        }
+        
+        for _, pkt := range pkts {
+            pktData := map[string]any{
+                "type": fmt.Sprintf("%T", pkt),
+            }
+            
+            switch p := pkt.(type) {
+            case *rtcp.SenderReport:
+                pktData["ssrc"] = p.SSRC
+                pktData["packets"] = p.PacketCount
+                pktData["bytes"] = p.OctetCount
+            case *rtcp.ReceiverReport:
+                pktData["ssrc"] = p.SSRC
+                pktData["reports"] = len(p.Reports)
+            }
+            
+            data["packets"] = append(data["packets"].([]map[string]any), pktData)
+        }
+        
+        jsonData, _ := json.Marshal(data)
+        return append(jsonData, '\n')
+    }
+    
+    // Create interceptor registry
+    i := &interceptor.Registry{}
+    
+    // Add sender interceptor
+    senderFactory, err := packetdump.NewSenderInterceptor(
+        packetdump.RTPWriter(rtpFile),
+        packetdump.RTCPWriter(rtcpFile),
+        packetdump.RTCPBinaryFormatter(rtcpFormatter),
+        // Only log video packets
+        packetdump.RTPFilter(func(header *rtp.Header, payload []byte, attributes interceptor.Attributes) bool {
+            return header.PayloadType == 96 // VP8
+        }),
+    )
+    if err != nil {
+        panic(err)
+    }
+    i.Add(senderFactory)
+    
+    // Create media engine and API
+    m := &webrtc.MediaEngine{}
+    if err := m.RegisterDefaultCodecs(); err != nil {
+        panic(err)
+    }
+    
+    api := webrtc.NewAPI(
+        webrtc.WithMediaEngine(m),
+        webrtc.WithInterceptorRegistry(i),
+    )
+    
+    // Create peer connection
+    pc, err := api.NewPeerConnection(webrtc.Configuration{})
+    if err != nil {
+        panic(err)
+    }
+    defer pc.Close()
+    
+    log.Println("Packet dump configured - logging to files")
+    
+    select {}
+}
+```
+
+## Filtering Strategies
+
+### By SSRC
+
+```go
+targetSSRC := uint32(12345)
+
+factory, err := packetdump.NewReceiverInterceptor(
+    packetdump.RTPFilter(func(header *rtp.Header, payload []byte, attributes interceptor.Attributes) bool {
+        return header.SSRC == targetSSRC
+    }),
+)
+```
+
+### By Payload Type
+
+```go
+// Only log VP8 video
+factory, err := packetdump.NewSenderInterceptor(
+    packetdump.RTPFilter(func(header *rtp.Header, payload []byte, attributes interceptor.Attributes) bool {
+        return header.PayloadType == 96
+    }),
+)
+
+// Only log Opus audio
+factory, err := packetdump.NewSenderInterceptor(
+    packetdump.RTPFilter(func(header *rtp.Header, payload []byte, attributes interceptor.Attributes) bool {
+        return header.PayloadType == 111
+    }),
+)
+```
+
+### By Packet Size
+
+```go
+// Only log large packets (potential keyframes)
+factory, err := packetdump.NewSenderInterceptor(
+    packetdump.RTPFilter(func(header *rtp.Header, payload []byte, attributes interceptor.Attributes) bool {
+        return len(payload) > 10000 // > 10KB
+    }),
+)
+```
+
+### By RTCP Type
+
+```go
+// Only log NACKs and PLIs
+factory, err := packetdump.NewReceiverInterceptor(
+    packetdump.RTCPPerPacketFilter(func(pkt rtcp.Packet, attributes interceptor.Attributes) bool {
+        switch pkt.(type) {
+        case *rtcp.TransportLayerNack, *rtcp.PictureLossIndication:
+            return true
+        default:
+            return false
+        }
+    }),
+)
+```
+
+## Output Formats
+
+### Binary Format
+
+```go
+// Raw RTP packets
+factory, err := packetdump.NewSenderInterceptor(
+    packetdump.RTPWriter(file),
+)
+
+// Each packet is written as:
+// [12-byte RTP header][payload]
+```
+
+### JSON Format
+
+```go
+// Custom JSON formatter
+jsonFormatter := func(header *rtp.Header, payload []byte, attr interceptor.Attributes) []byte {
+    data := map[string]any{
+        "timestamp":      time.Now().Unix(),
+        "ssrc":           header.SSRC,
+        "sequenceNumber": header.SequenceNumber,
+        "payloadType":    header.PayloadType,
+        "marker":         header.Marker,
+        "payloadSize":    len(payload),
+    }
+    
+    jsonData, _ := json.Marshal(data)
+    return append(jsonData, '\n')
+}
+
+factory, err := packetdump.NewSenderInterceptor(
+    packetdump.RTPBinaryFormatter(jsonFormatter),
+    packetdump.RTPWriter(file),
+)
+```
+
+### PCAP Format
+
+For Wireshark analysis:
+
+```go
+import "github.com/google/gopacket/pcapgo"
+
+pcapFile, _ := os.Create("capture.pcap")
+pcapWriter := pcapgo.NewWriter(pcapFile)
+pcapWriter.WriteFileHeader(65536, layers.LinkTypeEthernet)
+
+// Wrap packets in Ethernet/IP/UDP headers before writing
+```
+
+## Analysis Examples
+
+### Count Packets by Type
+
+```go
+type PacketCounter struct {
+    rtpCount  int64
+    rtcpCount map[string]int64
+    mu        sync.Mutex
+}
+
+func (pc *PacketCounter) LogRTP(header *rtp.Header, payload []byte, attributes interceptor.Attributes) {
+    pc.mu.Lock()
+    defer pc.mu.Unlock()
+    pc.rtpCount++
+    
+    if pc.rtpCount%100 == 0 {
+        log.Printf("RTP packets: %d", pc.rtpCount)
+    }
+}
+
+func (pc *PacketCounter) LogRTCP(packets []rtcp.Packet, attributes interceptor.Attributes) {
+    pc.mu.Lock()
+    defer pc.mu.Unlock()
+    
+    for _, pkt := range packets {
+        typeName := fmt.Sprintf("%T", pkt)
+        pc.rtcpCount[typeName]++
+    }
+}
+
+func (pc *PacketCounter) PrintStats() {
+    pc.mu.Lock()
+    defer pc.mu.Unlock()
+    
+    log.Printf("=== Packet Statistics ===")
+    log.Printf("RTP packets: %d", pc.rtpCount)
+    log.Printf("RTCP packets:")
+    for typ, count := range pc.rtcpCount {
+        log.Printf("  %s: %d", typ, count)
+    }
+}
+```
+
+### Detect Packet Loss
+
+```go
+type LossDetector struct {
+    lastSeq map[uint32]uint16
+    losses  int64
+    mu      sync.Mutex
+}
+
+func (ld *LossDetector) LogRTP(header *rtp.Header, payload []byte, attributes interceptor.Attributes) {
+    ld.mu.Lock()
+    defer ld.mu.Unlock()
+    
+    if lastSeq, exists := ld.lastSeq[header.SSRC]; exists {
+        expectedSeq := lastSeq + 1
+        if header.SequenceNumber != expectedSeq {
+            gap := int(header.SequenceNumber) - int(expectedSeq)
+            if gap < 0 {
+                gap += 65536 // Handle wrap-around
+            }
+            ld.losses += int64(gap)
+            log.Printf("Packet loss detected: SSRC=%d, expected=%d, got=%d, gap=%d",
+                header.SSRC, expectedSeq, header.SequenceNumber, gap)
+        }
+    }
+    
+    ld.lastSeq[header.SSRC] = header.SequenceNumber
+}
+
+func (ld *LossDetector) LogRTCP(packets []rtcp.Packet, attributes interceptor.Attributes) {
+    // Optional: log RTCP reports
+}
+```
+
+### Measure Bitrate
+
+```go
+type BitrateMonitor struct {
+    bytes     int64
+    startTime time.Time
+    mu        sync.Mutex
+}
+
+func NewBitrateMonitor() *BitrateMonitor {
+    return &BitrateMonitor{
+        startTime: time.Now(),
+    }
+}
+
+func (bm *BitrateMonitor) LogRTP(header *rtp.Header, payload []byte, attributes interceptor.Attributes) {
+    bm.mu.Lock()
+    defer bm.mu.Unlock()
+    
+    bm.bytes += int64(header.MarshalSize() + len(payload))
+}
+
+func (bm *BitrateMonitor) LogRTCP(packets []rtcp.Packet, attributes interceptor.Attributes) {
+    // Count RTCP bytes if needed
+}
+
+func (bm *BitrateMonitor) GetBitrate() float64 {
+    bm.mu.Lock()
+    defer bm.mu.Unlock()
+    
+    elapsed := time.Since(bm.startTime).Seconds()
+    if elapsed == 0 {
+        return 0
+    }
+    
+    return float64(bm.bytes) * 8 / elapsed // bits per second
+}
+```
+
+## Performance Considerations
+
+### File I/O
+
+```go
+// Use buffered writers for better performance
+import "bufio"
+
+file, _ := os.Create("output.bin")
+buffered := bufio.NewWriter(file)
+
+factory, err := packetdump.NewSenderInterceptor(
+    packetdump.RTPWriter(buffered),
+)
+
+// Flush periodically
+go func() {
+    ticker := time.NewTicker(1 * time.Second)
+    defer ticker.Stop()
+    for range ticker.C {
+        buffered.Flush()
+    }
+}()
+```
+
+### Filtering
+
+```go
+// Filter early to minimize processing
+factory, err := packetdump.NewSenderInterceptor(
+    // Filter before formatting
+    packetdump.RTPFilter(func(header *rtp.Header, payload []byte, attributes interceptor.Attributes) bool {
+        return shouldLog(header) // Fast check
+    }),
+    packetdump.RTPWriter(writer),
+)
+```
+
+### Disk Space
+
+```go
+// Estimate disk usage
+func estimateDiskUsage(bitrate int, duration time.Duration) int64 {
+    // RTP overhead ~12 bytes per packet
+    // Assume 1200 byte MTU
+    packetsPerSecond := bitrate / (1200 * 8)
+    bytesPerSecond := packetsPerSecond * 1200
+    
+    return int64(bytesPerSecond) * int64(duration.Seconds())
+}
+
+usage := estimateDiskUsage(2_000_000, 1*time.Hour) // 2 Mbps for 1 hour
+log.Printf("Estimated disk usage: %.2f MB", float64(usage)/1_000_000)
+```
+
+## Best Practices
+
+1. **Use Filters**: Only log what you need to minimize overhead
+2. **Buffered I/O**: Use buffered writers for better performance
+3. **Rotate Files**: Implement log rotation for long-running sessions
+4. **Monitor Disk**: Check available disk space before logging
+5. **Production**: Disable or limit logging in production environments
+
+<Warning>
+Packet dumping can generate large amounts of data. A 2 Mbps stream produces ~900 MB per hour. Use filtering and ensure adequate storage.
+</Warning>
+
+## Troubleshooting
+
+<Accordion title="No packets being logged">
+Check:
+1. Interceptor is properly registered
+2. RTP/RTCP traffic is flowing
+3. Filters aren't too restrictive
+4. File handles are valid
+5. No I/O errors occurred
+</Accordion>
+
+<Accordion title="File size growing too quickly">
+1. Apply stricter filters
+2. Reduce logging frequency
+3. Log headers only, not payloads
+4. Implement file rotation
+</Accordion>
+
+<Accordion title="Performance degradation">
+1. Use buffered I/O
+2. Minimize formatter complexity
+3. Filter before formatting
+4. Consider sampling (log 1 in N packets)
+</Accordion>
+
+## Related Interceptors
+
+- [Stats](/interceptors/stats) - Collect metrics instead of raw packets
+- [Report](/interceptors/report) - Get aggregate statistics
+- [NACK](/interceptors/nack) - Identify which packets are being retransmitted

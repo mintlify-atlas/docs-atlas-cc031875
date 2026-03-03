@@ -1,0 +1,395 @@
+---
+title: Interval PLI Interceptor
+description: Periodically request keyframes using Picture Loss Indication
+---
+
+The Interval PLI (Picture Loss Indication) interceptor automatically requests keyframes from video senders at regular intervals. This is useful for handling video corruption, stream recovery, and new viewer scenarios.
+
+## Overview
+
+The Interval PLI interceptor:
+
+- **Periodic keyframes**: Requests keyframes at configurable intervals
+- **Immediate requests**: Supports on-demand keyframe requests
+- **Per-stream control**: Works independently for each video stream
+- **Automatic management**: Handles timing and RTCP generation
+
+<Info>
+PLI (Picture Loss Indication) is an RTCP feedback message defined in RFC 4585 that requests an intra-coded frame from the video encoder.
+</Info>
+
+## Basic Usage
+
+```go
+import (
+    "time"
+    "github.com/pion/interceptor"
+    "github.com/pion/interceptor/pkg/intervalpli"
+)
+
+// Create interval PLI generator
+pliFactory, err := intervalpli.NewReceiverInterceptor(
+    intervalpli.GeneratorInterval(3 * time.Second),
+)
+if err != nil {
+    panic(err)
+}
+
+// Register with interceptor registry
+m := &interceptor.Registry{}
+m.Add(pliFactory)
+```
+
+## Configuration Options
+
+### GeneratorInterval
+
+Sets how often to request keyframes:
+
+```go
+pliFactory, err := intervalpli.NewReceiverInterceptor(
+    intervalpli.GeneratorInterval(3 * time.Second), // Default: 3 seconds
+)
+```
+
+<Note>
+Setting the interval to 0 disables periodic keyframe requests, but still allows manual requests via `ForcePLI()`.
+</Note>
+
+### GeneratorLog / WithLoggerFactory
+
+Configure logging for debugging:
+
+```go
+pliFactory, err := intervalpli.NewReceiverInterceptor(
+    intervalpli.WithLoggerFactory(loggerFactory),
+)
+```
+
+## Manual Keyframe Requests
+
+You can manually trigger keyframe requests:
+
+```go
+// Get the interceptor instance
+interceptor, err := intervalpli.NewGeneratorInterceptor(
+    intervalpli.GeneratorInterval(0), // Disable periodic
+)
+if err != nil {
+    panic(err)
+}
+
+// Request keyframe for specific SSRCs
+ssrc := uint32(12345)
+interceptor.ForcePLI(ssrc)
+
+// Request for multiple streams
+interceptor.ForcePLI(ssrc1, ssrc2, ssrc3)
+```
+
+## Complete Example
+
+```go
+package main
+
+import (
+    "log"
+    "time"
+    
+    "github.com/pion/interceptor"
+    "github.com/pion/interceptor/pkg/intervalpli"
+    "github.com/pion/webrtc/v4"
+)
+
+func main() {
+    // Create interceptor registry
+    i := &interceptor.Registry{}
+    
+    // Configure interval PLI
+    pliFactory, err := intervalpli.NewReceiverInterceptor(
+        intervalpli.GeneratorInterval(3 * time.Second),
+    )
+    if err != nil {
+        panic(err)
+    }
+    i.Add(pliFactory)
+    
+    // Create media engine and API
+    m := &webrtc.MediaEngine{}
+    if err := m.RegisterDefaultCodecs(); err != nil {
+        panic(err)
+    }
+    
+    api := webrtc.NewAPI(
+        webrtc.WithMediaEngine(m),
+        webrtc.WithInterceptorRegistry(i),
+    )
+    
+    // Create peer connection
+    pc, err := api.NewPeerConnection(webrtc.Configuration{})
+    if err != nil {
+        panic(err)
+    }
+    defer pc.Close()
+    
+    // Handle incoming tracks
+    pc.OnTrack(func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
+        log.Printf("Track started: %s", track.Codec().MimeType)
+        
+        // PLI will be automatically sent every 3 seconds
+        // for this video track
+    })
+    
+    log.Println("Interval PLI configured")
+    
+    select {}
+}
+```
+
+## How It Works
+
+### Automatic PLI Generation
+
+1. **Track Detection**: When a video track is added, it's registered
+2. **Timer**: A ticker fires at the configured interval
+3. **PLI Generation**: RTCP PLI packets are created for all registered tracks
+4. **Transmission**: PLI packets are sent to video senders
+5. **Keyframe**: Video encoder generates and sends an intra-frame
+
+```go
+// Simplified PLI generation loop
+for {
+    select {
+    case <-ticker.C:
+        for _, ssrc := range videoStreams {
+            sendPLI(ssrc) // Request keyframe
+        }
+    }
+}
+```
+
+### PLI Packet Structure
+
+```go
+type PictureLossIndication struct {
+    // SSRC of sender
+    SenderSSRC uint32
+    
+    // SSRC of media source needing keyframe
+    MediaSSRC uint32
+}
+```
+
+## Use Cases
+
+### New Viewer Scenario
+
+```go
+// When a new viewer joins, immediately request a keyframe
+pc.OnTrack(func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
+    // First PLI is sent automatically by interval interceptor
+    log.Printf("New viewer joined, keyframe will be requested")
+})
+```
+
+### Handling Video Corruption
+
+```go
+import (
+    "github.com/pion/interceptor/pkg/intervalpli"
+    "github.com/pion/interceptor/pkg/stats"
+)
+
+// Monitor for high packet loss, request keyframe if detected
+statsFactory, _ := stats.NewInterceptor()
+pliInterceptor, _ := intervalpli.NewGeneratorInterceptor(
+    intervalpli.GeneratorInterval(0), // Manual control
+)
+
+statsFactory.OnNewPeerConnection(func(id string, getter stats.Getter) {
+    go func() {
+        ticker := time.NewTicker(1 * time.Second)
+        defer ticker.Stop()
+        
+        for range ticker.C {
+            stats := getter.Get(ssrc)
+            if stats != nil && stats.InboundRTPStreamStats.FractionLost > 0.10 {
+                // High packet loss, request keyframe
+                log.Println("High loss detected, requesting keyframe")
+                pliInterceptor.ForcePLI(ssrc)
+            }
+        }
+    }()
+})
+```
+
+### Stream Recovery
+
+```go
+// Request keyframe after network interruption
+func handleNetworkReconnection(pli *intervalpli.GeneratorInterceptor, ssrcs []uint32) {
+    log.Println("Network reconnected, requesting keyframes")
+    pli.ForcePLI(ssrcs...)
+}
+```
+
+## Interval Recommendations
+
+### By Use Case
+
+```go
+// Live streaming (balance quality and bandwidth)
+pliFactory, _ := intervalpli.NewReceiverInterceptor(
+    intervalpli.GeneratorInterval(3 * time.Second),
+)
+
+// Video conferencing (frequent participants join/leave)
+pliFactory, _ := intervalpli.NewReceiverInterceptor(
+    intervalpli.GeneratorInterval(2 * time.Second),
+)
+
+// Broadcasting (viewers join frequently)
+pliFactory, _ := intervalpli.NewReceiverInterceptor(
+    intervalpli.GeneratorInterval(1 * time.Second),
+)
+
+// Low bandwidth (minimize overhead)
+pliFactory, _ := intervalpli.NewReceiverInterceptor(
+    intervalpli.GeneratorInterval(10 * time.Second),
+)
+
+// On-demand only (manual control)
+pliFactory, _ := intervalpli.NewReceiverInterceptor(
+    intervalpli.GeneratorInterval(0), // Disable periodic
+)
+```
+
+## Performance Impact
+
+### Bandwidth
+
+```go
+// PLI packet size
+pliSize := 12 // bytes (RTCP header + PLI)
+
+// Overhead at different intervals
+overhead1s := pliSize * 8 / 1.0  // 96 bps
+overhead3s := pliSize * 8 / 3.0  // 32 bps
+overhead10s := pliSize * 8 / 10.0 // 9.6 bps
+```
+
+<Info>
+PLI packets are tiny and have negligible bandwidth impact, but keyframes are much larger than delta frames.
+</Info>
+
+### Keyframe Overhead
+
+Keyframes are typically 5-10x larger than delta frames:
+
+```go
+// Typical sizes
+deltaFrame := 10_000  // bytes
+keyFrame := 50_000    // bytes (5x larger)
+
+// More frequent PLI = more keyframes = higher bandwidth
+```
+
+### Encoder Impact
+
+Keyframe generation is CPU-intensive:
+
+- **Delta frame**: ~5ms encoding time
+- **Keyframe**: ~25ms encoding time (5x longer)
+
+## Best Practices
+
+1. **Balance Interval**: Too frequent wastes bandwidth, too rare delays recovery
+2. **Network Conditions**: Increase frequency on unreliable networks
+3. **Viewer Patterns**: More frequent for scenarios with many new viewers
+4. **Combine with Monitoring**: Use stats to trigger on-demand PLI
+5. **Codec Considerations**: Some codecs handle keyframes better than others
+
+<Note>
+3 seconds is a good default for most use cases, balancing recovery time with bandwidth efficiency.
+</Note>
+
+## Integration Patterns
+
+### With Packet Loss Detection
+
+```go
+import (
+    "github.com/pion/interceptor/pkg/intervalpli"
+    "github.com/pion/interceptor/pkg/nack"
+)
+
+// Use NACK for normal losses, PLI for severe corruption
+pliFactory, _ := intervalpli.NewReceiverInterceptor(
+    intervalpli.GeneratorInterval(5 * time.Second),
+)
+i.Add(pliFactory)
+
+nackFactory, _ := nack.NewGeneratorInterceptor()
+i.Add(nackFactory)
+
+// NACK handles individual packet loss
+// PLI handles decoder state corruption
+```
+
+### With Simulcast
+
+```go
+// Request keyframes on layer switches
+func switchQualityLayer(pli *intervalpli.GeneratorInterceptor, newLayerSSRC uint32) {
+    log.Printf("Switching to quality layer %d", newLayerSSRC)
+    pli.ForcePLI(newLayerSSRC)
+}
+```
+
+## Troubleshooting
+
+<Accordion title="Keyframes not being generated">
+Check:
+1. PLI interceptor is registered
+2. Interval is not set to 0
+3. Video track supports PLI feedback
+4. Encoder is receiving and processing PLI
+5. RTCP is not blocked
+</Accordion>
+
+<Accordion title="Too frequent keyframes">
+If keyframes are too frequent:
+1. Increase GeneratorInterval
+2. Check for multiple PLI sources
+3. Verify encoder isn't generating unsolicited keyframes
+4. Monitor bandwidth usage
+</Accordion>
+
+<Accordion title="Delayed stream start">
+For faster startup:
+1. Call ForcePLI immediately on track start
+2. Use shorter interval (1-2 seconds)
+3. Configure encoder for faster keyframe generation
+</Accordion>
+
+## Alternative: FIR (Full Intra Request)
+
+PLI is preferred over FIR in modern WebRTC:
+
+```go
+// PLI (preferred)
+// - Simpler protocol
+// - Less overhead
+// - Widely supported
+
+// FIR (legacy)
+// - More complex
+// - Includes sequence number
+// - Being phased out
+```
+
+## Related Interceptors
+
+- [NACK](/interceptors/nack) - Handle individual packet loss
+- [Stats](/interceptors/stats) - Monitor loss to trigger PLI
+- [Report](/interceptors/report) - Track keyframe statistics

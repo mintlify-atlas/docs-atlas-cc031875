@@ -1,0 +1,316 @@
+---
+title: GCC (Google Congestion Control)
+description: Adaptive bitrate control using Google Congestion Control algorithm
+---
+
+The GCC (Google Congestion Control) interceptor implements send-side bandwidth estimation combining both loss-based and delay-based congestion control. It dynamically adjusts the target bitrate based on network conditions.
+
+## Overview
+
+GCC provides:
+
+- **Delay-based control**: Detects congestion from increasing packet delays
+- **Loss-based control**: Responds to packet loss rates
+- **Combined estimation**: Uses the minimum of both estimates
+- **Adaptive pacing**: Optional packet pacing to smooth transmission
+
+## Basic Usage
+
+```go
+import (
+    "github.com/pion/interceptor/pkg/gcc"
+    "github.com/pion/interceptor/pkg/twcc"
+)
+
+// Create GCC bandwidth estimator
+bwe, err := gcc.NewSendSideBWE(
+    gcc.SendSideBWEInitialBitrate(1_000_000), // 1 Mbps
+    gcc.SendSideBWEMinBitrate(100_000),       // 100 Kbps
+    gcc.SendSideBWEMaxBitrate(5_000_000),     // 5 Mbps
+)
+if err != nil {
+    panic(err)
+}
+defer bwe.Close()
+
+// Get notified of bitrate changes
+bwe.OnTargetBitrateChange(func(bitrate int) {
+    log.Printf("New target bitrate: %d bps", bitrate)
+    // Update encoder bitrate here
+})
+
+// Add streams to the estimator
+writer := bwe.AddStream(streamInfo, rtpWriter)
+
+// Feed TWCC feedback to the estimator
+bwe.WriteRTCP(rtcpPackets, attributes)
+```
+
+## Configuration Options
+
+### SendSideBWEInitialBitrate
+
+Sets the initial target bitrate in bits per second.
+
+```go
+bwe, err := gcc.NewSendSideBWE(
+    gcc.SendSideBWEInitialBitrate(1_000_000), // Default: 10,000 bps
+)
+```
+
+### SendSideBWEMinBitrate
+
+Sets the minimum allowed bitrate.
+
+```go
+bwe, err := gcc.NewSendSideBWE(
+    gcc.SendSideBWEMinBitrate(50_000), // Default: 5,000 bps
+)
+```
+
+<Note>
+The estimator will never recommend a bitrate below this value, even under severe congestion.
+</Note>
+
+### SendSideBWEMaxBitrate
+
+Sets the maximum allowed bitrate.
+
+```go
+bwe, err := gcc.NewSendSideBWE(
+    gcc.SendSideBWEMaxBitrate(10_000_000), // Default: 50,000,000 bps
+)
+```
+
+### SendSideBWEPacer
+
+Provides a custom pacer implementation for controlling packet transmission rate.
+
+```go
+import "github.com/pion/interceptor/pkg/gcc"
+
+// Use leaky bucket pacer (default)
+pacer := gcc.NewLeakyBucketPacer(initialBitrate, loggerFactory)
+
+bwe, err := gcc.NewSendSideBWE(
+    gcc.SendSideBWEPacer(pacer),
+)
+```
+
+<Info>
+If no pacer is specified, GCC uses a leaky bucket pacer by default.
+</Info>
+
+### WithLoggerFactory
+
+Sets a custom logger factory for debugging.
+
+```go
+bwe, err := gcc.NewSendSideBWE(
+    gcc.WithLoggerFactory(myLoggerFactory),
+)
+```
+
+## Complete Example
+
+```go
+package main
+
+import (
+    "log"
+    "github.com/pion/interceptor"
+    "github.com/pion/interceptor/pkg/gcc"
+    "github.com/pion/interceptor/pkg/twcc"
+    "github.com/pion/webrtc/v4"
+)
+
+func main() {
+    // Create media engine
+    m := &webrtc.MediaEngine{}
+    if err := m.RegisterDefaultCodecs(); err != nil {
+        panic(err)
+    }
+
+    // Create interceptor registry
+    i := &interceptor.Registry{}
+
+    // Register TWCC for feedback
+    if err := webrtc.ConfigureTWCCHeaderExtensionSender(m, i); err != nil {
+        panic(err)
+    }
+    
+    twccFactory, err := twcc.NewSenderInterceptor()
+    if err != nil {
+        panic(err)
+    }
+    i.Add(twccFactory)
+
+    // Create GCC bandwidth estimator
+    bwe, err := gcc.NewSendSideBWE(
+        gcc.SendSideBWEInitialBitrate(1_000_000),
+        gcc.SendSideBWEMinBitrate(100_000),
+        gcc.SendSideBWEMaxBitrate(5_000_000),
+    )
+    if err != nil {
+        panic(err)
+    }
+    defer bwe.Close()
+
+    // Handle bitrate changes
+    bwe.OnTargetBitrateChange(func(bitrate int) {
+        log.Printf("Target bitrate changed to: %d bps (%.2f Mbps)",
+            bitrate, float64(bitrate)/1_000_000)
+        
+        // Update your encoder's target bitrate here
+        // encoder.SetBitrate(bitrate)
+    })
+
+    // Get current statistics
+    stats := bwe.GetStats()
+    log.Printf("BWE Stats: %+v", stats)
+
+    // Get current target bitrate
+    currentBitrate := bwe.GetTargetBitrate()
+    log.Printf("Current target: %d bps", currentBitrate)
+}
+```
+
+## How It Works
+
+### Delay-Based Estimation
+
+1. **Arrival Time Tracking**: Records when packets arrive
+2. **Gradient Calculation**: Computes delay gradients using Kalman filter
+3. **Overuse Detection**: Detects when delay is increasing (congestion)
+4. **Rate Adjustment**: Decreases bitrate during congestion, increases when stable
+
+### Loss-Based Estimation
+
+1. **Loss Rate Calculation**: Monitors packet loss percentage
+2. **Threshold Detection**: Compares loss rate against thresholds
+3. **Multiplicative Decrease**: Reduces bitrate proportionally to loss
+4. **Additive Increase**: Slowly increases bitrate when loss is low
+
+### Combined Control
+
+```go
+// GCC uses the minimum of both estimates
+targetBitrate = min(delayBasedEstimate, lossBasedEstimate)
+```
+
+<Info>
+The delay controller responds quickly to congestion onset, while the loss controller prevents persistent overuse.
+</Info>
+
+## Getting Statistics
+
+GCC provides detailed internal statistics:
+
+```go
+stats := bwe.GetStats()
+for key, value := range stats {
+    log.Printf("%s: %v", key, value)
+}
+
+// Available statistics:
+// - lossTargetBitrate: Bitrate from loss-based controller
+// - averageLoss: Average packet loss rate
+// - delayTargetBitrate: Bitrate from delay-based controller
+// - delayMeasurement: Current delay measurement (ms)
+// - delayEstimate: Estimated delay (ms)
+// - delayThreshold: Overuse threshold (ms)
+// - usage: Network usage state (Normal/Over/Under)
+// - state: Controller state (Hold/Increase/Decrease)
+```
+
+## Working with TWCC
+
+GCC requires transport-wide congestion control feedback:
+
+```go
+import (
+    "github.com/pion/interceptor/pkg/gcc"
+    "github.com/pion/interceptor/pkg/twcc"
+)
+
+// Setup TWCC header extension
+if err := webrtc.ConfigureTWCCHeaderExtensionSender(m, i); err != nil {
+    panic(err)
+}
+
+// Add TWCC sender interceptor
+twccFactory, err := twcc.NewSenderInterceptor()
+if err != nil {
+    panic(err)
+}
+i.Add(twccFactory)
+
+// Create GCC
+bwe, err := gcc.NewSendSideBWE()
+if err != nil {
+    panic(err)
+}
+
+// Feed RTCP feedback to GCC
+rtcpReader := interceptor.RTCPReaderFunc(func(b []byte, a interceptor.Attributes) (int, interceptor.Attributes, error) {
+    n, attr, err := reader.Read(b, a)
+    if err != nil {
+        return 0, nil, err
+    }
+    
+    // Parse RTCP packets
+    pkts, err := rtcp.Unmarshal(b[:n])
+    if err != nil {
+        return n, attr, err
+    }
+    
+    // Feed to bandwidth estimator
+    if err := bwe.WriteRTCP(pkts, attr); err != nil {
+        log.Printf("Error writing RTCP: %v", err)
+    }
+    
+    return n, attr, nil
+})
+```
+
+## Performance Tuning
+
+<Accordion title="Initial Bitrate">
+Set based on expected network conditions:
+- **Low latency networks**: Start higher (2-5 Mbps)
+- **Mobile networks**: Start conservative (500 Kbps - 1 Mbps)
+- **Unknown networks**: Use default (1 Mbps)
+</Accordion>
+
+<Accordion title="Min/Max Bounds">
+Set appropriate bounds for your use case:
+- **Voice**: 50-100 Kbps min, 500 Kbps max
+- **Video (SD)**: 200 Kbps min, 2 Mbps max
+- **Video (HD)**: 500 Kbps min, 5 Mbps max
+- **Video (4K)**: 2 Mbps min, 20 Mbps max
+</Accordion>
+
+<Accordion title="Reaction Time">
+GCC adapts within:
+- **Congestion detection**: 100-500ms
+- **Bitrate increase**: 1-5 seconds
+- **Bitrate decrease**: Immediate (100-200ms)
+</Accordion>
+
+## Best Practices
+
+1. **Monitor Callbacks**: Always implement `OnTargetBitrateChange` to adjust your encoder
+2. **Set Bounds**: Define realistic min/max bitrates for your content
+3. **Check Stats**: Periodically log statistics to understand network behavior
+4. **Combine with FEC**: Use with NACK or FlexFEC for resilience
+5. **Start Conservative**: Better to start low and ramp up than overwhelm the network
+
+<Warning>
+GCC requires TWCC feedback to function. Ensure both sender and receiver support the Transport-CC RTP header extension.
+</Warning>
+
+## Related Interceptors
+
+- [TWCC](/interceptors/twcc) - Required for providing feedback to GCC
+- [Pacing](/interceptors/pacing) - Alternative pacing implementation
+- [Stats](/interceptors/stats) - Monitor bandwidth usage and performance

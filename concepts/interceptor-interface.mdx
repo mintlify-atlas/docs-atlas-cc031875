@@ -1,0 +1,393 @@
+---
+title: Interceptor interface
+description: Understanding the core Interceptor interface and its lifecycle methods
+---
+
+The `Interceptor` interface is the foundation of the Pion Interceptor library. It defines methods for processing RTP and RTCP packets in both directions, along with lifecycle hooks for stream management.
+
+## Interface definition
+
+Here's the complete interface from `interceptor.go`:
+
+```go
+// Interceptor can be used to add functionality to you PeerConnections by modifying any incoming/outgoing rtp/rtcp
+// packets, or sending your own packets as needed.
+type Interceptor interface {
+    // BindRTCPReader lets you modify any incoming RTCP packets. It is called once per sender/receiver, however this might
+    // change in the future. The returned method will be called once per packet batch.
+    BindRTCPReader(reader RTCPReader) RTCPReader
+
+    // BindRTCPWriter lets you modify any outgoing RTCP packets. It is called once per PeerConnection. The returned method
+    // will be called once per packet batch.
+    BindRTCPWriter(writer RTCPWriter) RTCPWriter
+
+    // BindLocalStream lets you modify any outgoing RTP packets. It is called once for per LocalStream. The returned method
+    // will be called once per rtp packet.
+    BindLocalStream(info *StreamInfo, writer RTPWriter) RTPWriter
+
+    // UnbindLocalStream is called when the Stream is removed. It can be used to clean up any data related to that track.
+    UnbindLocalStream(info *StreamInfo)
+
+    // BindRemoteStream lets you modify any incoming RTP packets.
+    // It is called once for per RemoteStream. The returned method
+    // will be called once per rtp packet.
+    BindRemoteStream(info *StreamInfo, reader RTPReader) RTPReader
+
+    // UnbindRemoteStream is called when the Stream is removed. It can be used to clean up any data related to that track.
+    UnbindRemoteStream(info *StreamInfo)
+
+    io.Closer
+}
+```
+
+## Lifecycle overview
+
+Interceptors follow a specific lifecycle tied to the peer connection and stream lifecycles:
+
+<Steps>
+  <Step title="Creation">
+    The interceptor is created via a Factory when a new PeerConnection is established.
+  </Step>
+  
+  <Step title="RTCP binding">
+    `BindRTCPReader` and `BindRTCPWriter` are called once per PeerConnection to set up RTCP packet processing.
+  </Step>
+  
+  <Step title="Stream binding">
+    `BindLocalStream` or `BindRemoteStream` is called for each media stream that's added to the connection.
+  </Step>
+  
+  <Step title="Packet processing">
+    The returned readers/writers are invoked for each packet or packet batch.
+  </Step>
+  
+  <Step title="Stream unbinding">
+    `UnbindLocalStream` or `UnbindRemoteStream` is called when a stream is removed.
+  </Step>
+  
+  <Step title="Cleanup">
+    `Close()` is called when the interceptor is no longer needed.
+  </Step>
+</Steps>
+
+## Method details
+
+### BindRTCPReader
+
+Intercepts incoming RTCP packets from the network.
+
+```go
+BindRTCPReader(reader RTCPReader) RTCPReader
+```
+
+**Parameters:**
+- `reader`: The underlying RTCP reader to wrap
+
+**Returns:** A new RTCPReader that will be called for each incoming RTCP packet batch
+
+**Call frequency:** Once per sender/receiver
+
+**Use cases:**
+- Parse incoming receiver reports for quality metrics
+- React to Picture Loss Indication (PLI) or Full Intra Request (FIR) messages
+- Track remote bandwidth estimates
+
+### BindRTCPWriter
+
+Intercepts outgoing RTCP packets before they're sent to the network.
+
+```go
+BindRTCPWriter(writer RTCPWriter) RTCPWriter
+```
+
+**Parameters:**
+- `writer`: The underlying RTCP writer to wrap
+
+**Returns:** A new RTCPWriter that will be called for each outgoing RTCP packet batch
+
+**Call frequency:** Once per PeerConnection
+
+**Use cases:**
+- Generate sender reports for local streams
+- Send custom RTCP feedback messages
+- Implement bandwidth estimation algorithms
+
+### BindLocalStream
+
+Intercepts outgoing RTP packets for a local media stream.
+
+```go
+BindLocalStream(info *StreamInfo, writer RTPWriter) RTPWriter
+```
+
+**Parameters:**
+- `info`: Stream metadata including SSRC, payload type, and codec information
+- `writer`: The underlying RTP writer to wrap
+
+**Returns:** A new RTPWriter that will be called for each outgoing RTP packet
+
+**Call frequency:** Once per local stream
+
+**Use cases:**
+- Add RTP header extensions
+- Track packet send statistics
+- Implement custom packetization
+- Record outgoing media
+
+### UnbindLocalStream
+
+Cleans up resources when a local stream is removed.
+
+```go
+UnbindLocalStream(info *StreamInfo)
+```
+
+**Parameters:**
+- `info`: The StreamInfo for the stream being removed
+
+**Use cases:**
+- Close file handles for recording
+- Flush buffered statistics
+- Release per-stream data structures
+
+### BindRemoteStream
+
+Intercepts incoming RTP packets for a remote media stream.
+
+```go
+BindRemoteStream(info *StreamInfo, reader RTPReader) RTPReader
+```
+
+**Parameters:**
+- `info`: Stream metadata including SSRC, payload type, and codec information
+- `reader`: The underlying RTP reader to wrap
+
+**Returns:** A new RTPReader that will be called for each incoming RTP packet
+
+**Call frequency:** Once per remote stream
+
+**Use cases:**
+- Track packet loss and jitter
+- Implement jitter buffers
+- Record incoming media
+- Decode custom header extensions
+
+### UnbindRemoteStream
+
+Cleans up resources when a remote stream is removed.
+
+```go
+UnbindRemoteStream(info *StreamInfo)
+```
+
+**Parameters:**
+- `info`: The StreamInfo for the stream being removed
+
+**Use cases:**
+- Close file handles for recording
+- Calculate final statistics
+- Release per-stream data structures
+
+### Close
+
+Cleans up interceptor-wide resources.
+
+```go
+Close() error
+```
+
+**Returns:** An error if cleanup failed
+
+**Use cases:**
+- Close database connections
+- Flush logs
+- Release global resources
+
+## NoOp implementation
+
+The library provides a `NoOp` interceptor that passes all packets through unchanged. This is useful as a base for implementing interceptors that only need to override specific methods:
+
+```go
+// NoOp is an Interceptor that does not modify any packets. It can embedded in other interceptors, so it's
+// possible to implement only a subset of the methods.
+type NoOp struct{}
+
+func (i *NoOp) BindRTCPReader(reader RTCPReader) RTCPReader {
+    return reader
+}
+
+func (i *NoOp) BindRTCPWriter(writer RTCPWriter) RTCPWriter {
+    return writer
+}
+
+func (i *NoOp) BindLocalStream(_ *StreamInfo, writer RTPWriter) RTPWriter {
+    return writer
+}
+
+func (i *NoOp) UnbindLocalStream(_ *StreamInfo) {}
+
+func (i *NoOp) BindRemoteStream(_ *StreamInfo, reader RTPReader) RTPReader {
+    return reader
+}
+
+func (i *NoOp) UnbindRemoteStream(_ *StreamInfo) {}
+
+func (i *NoOp) Close() error {
+    return nil
+}
+```
+
+## Example: Packet counter interceptor
+
+Here's a simple interceptor that counts RTP packets:
+
+<CodeGroup>
+```go Implementation
+type PacketCounter struct {
+    NoOp
+    localPackets  atomic.Uint64
+    remotePackets atomic.Uint64
+}
+
+func (p *PacketCounter) BindLocalStream(info *StreamInfo, writer RTPWriter) RTPWriter {
+    return RTPWriterFunc(func(header *rtp.Header, payload []byte, attributes Attributes) (int, error) {
+        p.localPackets.Add(1)
+        return writer.Write(header, payload, attributes)
+    })
+}
+
+func (p *PacketCounter) BindRemoteStream(info *StreamInfo, reader RTPReader) RTPReader {
+    return RTPReaderFunc(func(b []byte, a Attributes) (int, Attributes, error) {
+        p.remotePackets.Add(1)
+        return reader.Read(b, a)
+    })
+}
+
+func (p *PacketCounter) GetStats() (local, remote uint64) {
+    return p.localPackets.Load(), p.remotePackets.Load()
+}
+```
+
+```go Usage
+factory := &PacketCounterFactory{}
+registry := &Registry{}
+registry.Add(factory)
+
+interceptor, err := registry.Build("peer-connection-1")
+if err != nil {
+    log.Fatal(err)
+}
+defer interceptor.Close()
+
+// Use interceptor with your PeerConnection...
+```
+</CodeGroup>
+
+<Tip>
+  Embed the `NoOp` type to only implement the methods you need. This provides sensible defaults for all other methods.
+</Tip>
+
+## Best practices
+
+<AccordionGroup>
+  <Accordion title="Always wrap the provided reader/writer">
+    When implementing bind methods, always call the provided reader/writer in your returned implementation. This ensures the packet flow continues through the chain.
+    
+    ```go
+    // Good
+    func (i *MyInterceptor) BindLocalStream(info *StreamInfo, writer RTPWriter) RTPWriter {
+        return RTPWriterFunc(func(header *rtp.Header, payload []byte, attributes Attributes) (int, error) {
+            // Your logic here
+            return writer.Write(header, payload, attributes) // Pass it along
+        })
+    }
+    
+    // Bad - breaks the chain!
+    func (i *MyInterceptor) BindLocalStream(info *StreamInfo, writer RTPWriter) RTPWriter {
+        return RTPWriterFunc(func(header *rtp.Header, payload []byte, attributes Attributes) (int, error) {
+            // Your logic here
+            return len(payload), nil // Doesn't call writer.Write!
+        })
+    }
+    ```
+  </Accordion>
+  
+  <Accordion title="Use StreamInfo for stream-specific logic">
+    The `StreamInfo` parameter contains important stream metadata. Use it to differentiate between streams and access codec information.
+    
+    ```go
+    func (i *MyInterceptor) BindRemoteStream(info *StreamInfo, reader RTPReader) RTPReader {
+        // Different logic for audio vs video
+        if strings.HasPrefix(info.MimeType, "video/") {
+            return i.createVideoReader(info, reader)
+        }
+        return i.createAudioReader(info, reader)
+    }
+    ```
+  </Accordion>
+  
+  <Accordion title="Clean up resources in unbind methods">
+    Always implement the unbind methods to properly clean up stream-specific resources. Don't wait for `Close()` to clean up per-stream resources.
+    
+    ```go
+    func (i *MyInterceptor) UnbindLocalStream(info *StreamInfo) {
+        i.mu.Lock()
+        defer i.mu.Unlock()
+        
+        if state, ok := i.streams[info.SSRC]; ok {
+            state.Close()
+            delete(i.streams, info.SSRC)
+        }
+    }
+    ```
+  </Accordion>
+  
+  <Accordion title="Handle errors gracefully">
+    If you encounter an error while processing a packet, decide whether to drop the packet or pass it through. Consider logging errors for debugging.
+    
+    ```go
+    return RTPReaderFunc(func(b []byte, a Attributes) (int, Attributes, error) {
+        if err := i.processPacket(b); err != nil {
+            log.Printf("Error processing packet: %v", err)
+            // Still pass packet through
+        }
+        return reader.Read(b, a)
+    })
+    ```
+  </Accordion>
+  
+  <Accordion title="Use Attributes for inter-interceptor communication">
+    The `Attributes` map allows interceptors to share data. Use custom keys to avoid conflicts.
+    
+    ```go
+    type myKeyType int
+    const myDataKey myKeyType = 0
+    
+    // In one interceptor
+    attributes.Set(myDataKey, myData)
+    
+    // In another interceptor
+    if val := attributes.Get(myDataKey); val != nil {
+        if data, ok := val.(*MyData); ok {
+            // Use the data
+        }
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Related documentation
+
+<CardGroup cols={3}>
+  <Card title="Architecture" icon="diagram-project" href="/concepts/architecture">
+    Overall design principles
+  </Card>
+  
+  <Card title="Chaining" icon="link" href="/concepts/chaining">
+    Compose multiple interceptors
+  </Card>
+  
+  <Card title="Attributes and StreamInfo" icon="tags" href="/concepts/attributes-streaminfo">
+    Stream metadata and attributes
+  </Card>
+</CardGroup>

@@ -1,0 +1,552 @@
+---
+title: Stats Interceptor
+description: Collect detailed statistics about RTP/RTCP streams
+---
+
+The Stats interceptor provides comprehensive statistics collection for RTP and RTCP streams, recording metrics about packets, bytes, jitter, loss, and more.
+
+## Overview
+
+The Stats interceptor:
+
+- **Records all packets**: Tracks both incoming and outgoing RTP/RTCP
+- **Per-stream statistics**: Maintains separate stats for each SSRC
+- **Real-time metrics**: Provides current statistics on demand
+- **Minimal overhead**: Uses efficient background processing
+
+## Basic Usage
+
+```go
+import (
+    "github.com/pion/interceptor"
+    "github.com/pion/interceptor/pkg/stats"
+)
+
+// Create stats interceptor
+statsFactory, err := stats.NewInterceptor()
+if err != nil {
+    panic(err)
+}
+
+// Get notified when new peer connections are created
+statsFactory.OnNewPeerConnection(func(id string, getter stats.Getter) {
+    log.Printf("New peer connection: %s", id)
+    
+    // Use getter to retrieve stats for specific SSRCs
+    go monitorStats(getter)
+})
+
+// Register with interceptor registry
+m := &interceptor.Registry{}
+m.Add(statsFactory)
+```
+
+## Getting Statistics
+
+### Per-Stream Stats
+
+```go
+// Get stats for a specific SSRC
+ssrc := uint32(12345)
+streamStats := getter.Get(ssrc)
+
+if streamStats != nil {
+    log.Printf("Stats for SSRC %d:", ssrc)
+    log.Printf("  Packets sent: %d", streamStats.OutboundRTPStreamStats.PacketsSent)
+    log.Printf("  Bytes sent: %d", streamStats.OutboundRTPStreamStats.BytesSent)
+    log.Printf("  Packets received: %d", streamStats.InboundRTPStreamStats.PacketsReceived)
+    log.Printf("  Packets lost: %d", streamStats.InboundRTPStreamStats.PacketsLost)
+}
+```
+
+### Available Statistics
+
+<Accordion title="Outbound RTP Stats">
+```go
+type OutboundRTPStreamStats struct {
+    // Number of packets sent
+    PacketsSent uint32
+    
+    // Number of bytes sent (excluding headers)
+    BytesSent uint64
+    
+    // Number of header bytes sent
+    HeaderBytesSent uint64
+    
+    // Number of retransmitted packets
+    RetransmittedPacketsSent uint32
+    
+    // Number of retransmitted bytes
+    RetransmittedBytesSent uint64
+    
+    // Target bitrate (if available)
+    TargetBitrate float64
+    
+    // Total packet send delay
+    TotalPacketSendDelay time.Duration
+}
+```
+</Accordion>
+
+<Accordion title="Inbound RTP Stats">
+```go
+type InboundRTPStreamStats struct {
+    // Number of packets received
+    PacketsReceived uint32
+    
+    // Number of bytes received
+    BytesReceived uint64
+    
+    // Number of header bytes received
+    HeaderBytesReceived uint64
+    
+    // Number of packets lost
+    PacketsLost uint32
+    
+    // Jitter in timestamp units
+    Jitter float64
+    
+    // Last packet timestamp
+    LastPacketReceivedTimestamp time.Time
+    
+    // Fraction lost (0.0 to 1.0)
+    FractionLost float64
+}
+```
+</Accordion>
+
+<Accordion title="RTCP Stats">
+```go
+// Both inbound and outbound RTCP stats available
+type RTCPStats struct {
+    // Number of RTCP packets sent/received
+    PacketsSent uint32
+    PacketsReceived uint32
+    
+    // Bytes sent/received
+    BytesSent uint64
+    BytesReceived uint64
+}
+```
+</Accordion>
+
+## Configuration Options
+
+### SetRecorderFactory
+
+Provide a custom recorder factory for specialized statistics:
+
+```go
+statsFactory, err := stats.NewInterceptor(
+    stats.SetRecorderFactory(func(ssrc uint32, clockRate float64) stats.Recorder {
+        // Return custom recorder implementation
+        return myCustomRecorder{}
+    }),
+)
+```
+
+### WithLoggerFactory
+
+Configure logging:
+
+```go
+statsFactory, err := stats.NewInterceptor(
+    stats.WithLoggerFactory(loggerFactory),
+)
+```
+
+### SetNowFunc
+
+Useful for testing with controlled time:
+
+```go
+statsFactory, err := stats.NewInterceptor(
+    stats.SetNowFunc(func() time.Time {
+        return testClock.Now()
+    }),
+)
+```
+
+## Complete Example
+
+```go
+package main
+
+import (
+    "log"
+    "time"
+    
+    "github.com/pion/interceptor"
+    "github.com/pion/interceptor/pkg/stats"
+    "github.com/pion/webrtc/v4"
+)
+
+func main() {
+    // Create stats interceptor
+    statsFactory, err := stats.NewInterceptor()
+    if err != nil {
+        panic(err)
+    }
+    
+    // Monitor new connections
+    statsFactory.OnNewPeerConnection(func(id string, getter stats.Getter) {
+        log.Printf("New peer connection: %s", id)
+        
+        // Start monitoring stats
+        go func() {
+            ticker := time.NewTicker(5 * time.Second)
+            defer ticker.Stop()
+            
+            for range ticker.C {
+                // Get stats for all tracked SSRCs
+                // In practice, you'd track SSRCs from your streams
+                ssrcs := getTrackedSSRCs()
+                
+                for _, ssrc := range ssrcs {
+                    stats := getter.Get(ssrc)
+                    if stats != nil {
+                        printStats(ssrc, stats)
+                    }
+                }
+            }
+        }()
+    })
+    
+    // Create interceptor registry
+    i := &interceptor.Registry{}
+    i.Add(statsFactory)
+    
+    // Create media engine and API
+    m := &webrtc.MediaEngine{}
+    if err := m.RegisterDefaultCodecs(); err != nil {
+        panic(err)
+    }
+    
+    api := webrtc.NewAPI(
+        webrtc.WithMediaEngine(m),
+        webrtc.WithInterceptorRegistry(i),
+    )
+    
+    // Create peer connection
+    pc, err := api.NewPeerConnection(webrtc.Configuration{})
+    if err != nil {
+        panic(err)
+    }
+    defer pc.Close()
+    
+    // Add tracks, establish connection, etc.
+    // ...
+    
+    select {}
+}
+
+func printStats(ssrc uint32, s *stats.Stats) {
+    log.Printf("=== Stats for SSRC %d ===", ssrc)
+    
+    // Outbound stats
+    if s.OutboundRTPStreamStats.PacketsSent > 0 {
+        log.Printf("Outbound:")
+        log.Printf("  Packets: %d", s.OutboundRTPStreamStats.PacketsSent)
+        log.Printf("  Bytes: %d", s.OutboundRTPStreamStats.BytesSent)
+        
+        if s.OutboundRTPStreamStats.RetransmittedPacketsSent > 0 {
+            log.Printf("  Retransmitted: %d packets",
+                s.OutboundRTPStreamStats.RetransmittedPacketsSent)
+        }
+    }
+    
+    // Inbound stats
+    if s.InboundRTPStreamStats.PacketsReceived > 0 {
+        log.Printf("Inbound:")
+        log.Printf("  Packets: %d", s.InboundRTPStreamStats.PacketsReceived)
+        log.Printf("  Bytes: %d", s.InboundRTPStreamStats.BytesReceived)
+        log.Printf("  Lost: %d (%.2f%%)",
+            s.InboundRTPStreamStats.PacketsLost,
+            s.InboundRTPStreamStats.FractionLost*100)
+        log.Printf("  Jitter: %.2f", s.InboundRTPStreamStats.Jitter)
+    }
+}
+
+func getTrackedSSRCs() []uint32 {
+    // Return SSRCs you're tracking
+    return []uint32{}
+}
+```
+
+## Monitoring Patterns
+
+### Real-time Monitoring
+
+```go
+// Monitor stats every second
+ticker := time.NewTicker(1 * time.Second)
+defer ticker.Stop()
+
+for range ticker.C {
+    stats := getter.Get(ssrc)
+    if stats == nil {
+        continue
+    }
+    
+    // Check for issues
+    if stats.InboundRTPStreamStats.FractionLost > 0.05 {
+        log.Printf("WARNING: High packet loss: %.2f%%",
+            stats.InboundRTPStreamStats.FractionLost*100)
+    }
+    
+    if stats.InboundRTPStreamStats.Jitter > 30 {
+        log.Printf("WARNING: High jitter: %.2f",
+            stats.InboundRTPStreamStats.Jitter)
+    }
+}
+```
+
+### Periodic Reporting
+
+```go
+// Generate report every 30 seconds
+ticker := time.NewTicker(30 * time.Second)
+defer ticker.Stop()
+
+for range ticker.C {
+    report := generateReport(getter)
+    sendToAnalytics(report)
+}
+
+func generateReport(getter stats.Getter) Report {
+    report := Report{
+        Timestamp: time.Now(),
+        Streams:   make(map[uint32]StreamReport),
+    }
+    
+    for _, ssrc := range trackedSSRCs {
+        stats := getter.Get(ssrc)
+        if stats != nil {
+            report.Streams[ssrc] = StreamReport{
+                PacketsSent:     stats.OutboundRTPStreamStats.PacketsSent,
+                PacketsReceived: stats.InboundRTPStreamStats.PacketsReceived,
+                PacketsLost:     stats.InboundRTPStreamStats.PacketsLost,
+                Jitter:          stats.InboundRTPStreamStats.Jitter,
+            }
+        }
+    }
+    
+    return report
+}
+```
+
+### Quality Alerts
+
+```go
+type QualityMonitor struct {
+    getter stats.Getter
+    alerts chan Alert
+}
+
+func (m *QualityMonitor) Monitor(ssrc uint32) {
+    ticker := time.NewTicker(1 * time.Second)
+    defer ticker.Stop()
+    
+    for range ticker.C {
+        stats := m.getter.Get(ssrc)
+        if stats == nil {
+            continue
+        }
+        
+        // Check various quality metrics
+        if stats.InboundRTPStreamStats.FractionLost > 0.10 {
+            m.alerts <- Alert{
+                SSRC:     ssrc,
+                Type:     "high_packet_loss",
+                Value:    stats.InboundRTPStreamStats.FractionLost,
+                Severity: "critical",
+            }
+        }
+        
+        if stats.InboundRTPStreamStats.Jitter > 50 {
+            m.alerts <- Alert{
+                SSRC:     ssrc,
+                Type:     "high_jitter",
+                Value:    stats.InboundRTPStreamStats.Jitter,
+                Severity: "warning",
+            }
+        }
+        
+        // Check for stalled stream
+        if time.Since(stats.InboundRTPStreamStats.LastPacketReceivedTimestamp) > 5*time.Second {
+            m.alerts <- Alert{
+                SSRC:     ssrc,
+                Type:     "stream_stalled",
+                Severity: "critical",
+            }
+        }
+    }
+}
+```
+
+## Calculating Metrics
+
+### Bitrate Calculation
+
+```go
+type BitrateCalculator struct {
+    lastBytes uint64
+    lastTime  time.Time
+}
+
+func (c *BitrateCalculator) Calculate(stats *stats.Stats) float64 {
+    currentBytes := stats.OutboundRTPStreamStats.BytesSent
+    currentTime := time.Now()
+    
+    if c.lastTime.IsZero() {
+        c.lastBytes = currentBytes
+        c.lastTime = currentTime
+        return 0
+    }
+    
+    deltaBytes := currentBytes - c.lastBytes
+    deltaTime := currentTime.Sub(c.lastTime).Seconds()
+    
+    c.lastBytes = currentBytes
+    c.lastTime = currentTime
+    
+    // Return bits per second
+    return float64(deltaBytes) * 8 / deltaTime
+}
+```
+
+### Packet Rate
+
+```go
+func calculatePacketRate(stats *stats.Stats, duration time.Duration) float64 {
+    packets := float64(stats.OutboundRTPStreamStats.PacketsSent)
+    seconds := duration.Seconds()
+    return packets / seconds
+}
+```
+
+### Loss Percentage
+
+```go
+func calculateLossPercentage(stats *stats.Stats) float64 {
+    received := float64(stats.InboundRTPStreamStats.PacketsReceived)
+    lost := float64(stats.InboundRTPStreamStats.PacketsLost)
+    
+    if received+lost == 0 {
+        return 0
+    }
+    
+    return (lost / (received + lost)) * 100
+}
+```
+
+## Best Practices
+
+1. **Regular Polling**: Check stats at regular intervals (1-5 seconds)
+2. **Track SSRCs**: Maintain a list of active SSRCs from your tracks
+3. **Delta Calculations**: Calculate rates by comparing with previous values
+4. **Alert Thresholds**: Set appropriate thresholds for your use case
+5. **Resource Cleanup**: Untrack SSRCs when streams end
+
+<Info>
+The stats interceptor automatically starts a background goroutine for each stream to process statistics.
+</Info>
+
+## Performance Impact
+
+- **CPU**: Minimal - processes packets asynchronously
+- **Memory**: ~1KB per tracked SSRC
+- **Network**: No additional network traffic
+
+## Integration with Other Interceptors
+
+### With Reports
+
+```go
+// Combine stats with standard reports
+reportFactory, _ := report.NewSenderInterceptor()
+i.Add(reportFactory)
+
+statsFactory, _ := stats.NewInterceptor()
+i.Add(statsFactory)
+
+// Reports provide RTCP feedback
+// Stats provide detailed metrics
+```
+
+### With NACK
+
+```go
+// Monitor retransmission effectiveness
+stats := getter.Get(ssrc)
+if stats != nil {
+    retransmitRate := float64(stats.OutboundRTPStreamStats.RetransmittedPacketsSent) /
+        float64(stats.OutboundRTPStreamStats.PacketsSent)
+    
+    log.Printf("Retransmission rate: %.2f%%", retransmitRate*100)
+}
+```
+
+## Custom Recorders
+
+Implement custom statistics recorders:
+
+```go
+type CustomRecorder struct {
+    ssrc      uint32
+    clockRate float64
+    // Your custom fields
+}
+
+func (r *CustomRecorder) QueueIncomingRTP(ts time.Time, buf []byte, attr interceptor.Attributes) {
+    // Process incoming RTP
+}
+
+func (r *CustomRecorder) QueueIncomingRTCP(ts time.Time, buf []byte, attr interceptor.Attributes) {
+    // Process incoming RTCP
+}
+
+func (r *CustomRecorder) QueueOutgoingRTP(ts time.Time, header *rtp.Header, payload []byte, attr interceptor.Attributes) {
+    // Process outgoing RTP
+}
+
+func (r *CustomRecorder) QueueOutgoingRTCP(ts time.Time, pkts []rtcp.Packet, attr interceptor.Attributes) {
+    // Process outgoing RTCP
+}
+
+func (r *CustomRecorder) GetStats() stats.Stats {
+    // Return computed statistics
+    return stats.Stats{}
+}
+
+func (r *CustomRecorder) Start() {
+    // Start background processing
+}
+
+func (r *CustomRecorder) Stop() {
+    // Stop and cleanup
+}
+```
+
+## Troubleshooting
+
+<Accordion title="Stats returning nil">
+Check that:
+1. The SSRC has been seen in RTP traffic
+2. The stream is active
+3. The interceptor is properly bound
+</Accordion>
+
+<Accordion title="Outdated statistics">
+The recorder processes asynchronously. Stats may lag slightly behind real-time.
+</Accordion>
+
+<Accordion title="Missing SSRCs">
+Ensure you're tracking the correct SSRCs from your streams. SSRCs are assigned when tracks are added.
+</Accordion>
+
+## Related Interceptors
+
+- [Report](/interceptors/report) - Standard RTCP sender/receiver reports
+- [NACK](/interceptors/nack) - Monitor retransmission statistics
+- [TWCC](/interceptors/twcc) - Track congestion control effectiveness

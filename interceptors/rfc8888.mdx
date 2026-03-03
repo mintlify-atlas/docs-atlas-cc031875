@@ -1,0 +1,461 @@
+---
+title: RFC 8888 Interceptor
+description: RTP Congestion Control Feedback based on RFC 8888
+---
+
+The RFC 8888 interceptor implements congestion control feedback as specified in [RFC 8888](https://datatracker.ietf.org/doc/html/rfc8888) (Congestion Control Feedback in RTCP). It provides detailed packet-level feedback for advanced congestion control algorithms.
+
+## Overview
+
+RFC 8888 provides:
+
+- **Per-packet feedback**: Reports arrival time and ECN marks for each packet
+- **Explicit Congestion Notification (ECN)**: Supports ECN-based congestion detection
+- **Flexible reporting**: Configurable report intervals and sizes
+- **Standards-based**: Implements IETF standard for congestion feedback
+
+<Info>
+RFC 8888 is an alternative to TWCC (Transport-Wide Congestion Control) with additional support for ECN marking.
+</Info>
+
+## Basic Usage
+
+```go
+import (
+    "time"
+    "github.com/pion/interceptor"
+    "github.com/pion/interceptor/pkg/rfc8888"
+)
+
+// Create RFC 8888 sender interceptor
+rfc8888Factory, err := rfc8888.NewSenderInterceptor(
+    rfc8888.SendInterval(100 * time.Millisecond),
+)
+if err != nil {
+    panic(err)
+}
+
+// Register with interceptor registry
+m := &interceptor.Registry{}
+m.Add(rfc8888Factory)
+```
+
+## Configuration Options
+
+### SendInterval
+
+Sets how often to send congestion control feedback reports:
+
+```go
+rfc8888Factory, err := rfc8888.NewSenderInterceptor(
+    rfc8888.SendInterval(100 * time.Millisecond), // Default: 100ms
+)
+```
+
+<Note>
+Shorter intervals provide more responsive congestion control but increase RTCP bandwidth usage.
+</Note>
+
+### WithLoggerFactory
+
+Configure logging for debugging:
+
+```go
+rfc8888Factory, err := rfc8888.NewSenderInterceptor(
+    rfc8888.WithLoggerFactory(loggerFactory),
+)
+```
+
+## How It Works
+
+### Packet Recording
+
+1. **Reception**: Incoming RTP packets are intercepted
+2. **Timestamp**: Arrival time is recorded with microsecond precision
+3. **ECN**: ECN bits are extracted (if available)
+4. **Storage**: Packet info is stored in per-stream logs
+5. **Report**: Periodic feedback reports are generated
+
+### Report Structure
+
+```go
+type CCFeedbackReport struct {
+    // Sender SSRC
+    SenderSSRC uint32
+    
+    // Media SSRC
+    MediaSSRC uint32
+    
+    // Report timestamp (NTP format)
+    ReportTimestamp uint64
+    
+    // Metric blocks containing packet info
+    MetricBlocks []MetricBlock
+}
+
+type MetricBlock struct {
+    // Base sequence number
+    BaseSequenceNumber uint16
+    
+    // Packet metrics (arrival times, ECN)
+    PacketMetrics []PacketMetric
+}
+
+type PacketMetric struct {
+    // Received (true) or lost (false)
+    Received bool
+    
+    // ECN mark (if available)
+    ECN uint8
+    
+    // Arrival time offset (from base time)
+    ArrivalTimeOffset uint32
+}
+```
+
+## Complete Example
+
+```go
+package main
+
+import (
+    "log"
+    "time"
+    
+    "github.com/pion/interceptor"
+    "github.com/pion/interceptor/pkg/rfc8888"
+    "github.com/pion/rtcp"
+    "github.com/pion/webrtc/v4"
+)
+
+func main() {
+    // Create interceptor registry
+    i := &interceptor.Registry{}
+    
+    // Configure RFC 8888 congestion control feedback
+    rfc8888Factory, err := rfc8888.NewSenderInterceptor(
+        rfc8888.SendInterval(100 * time.Millisecond),
+    )
+    if err != nil {
+        panic(err)
+    }
+    i.Add(rfc8888Factory)
+    
+    // Create media engine and API
+    m := &webrtc.MediaEngine{}
+    if err := m.RegisterDefaultCodecs(); err != nil {
+        panic(err)
+    }
+    
+    api := webrtc.NewAPI(
+        webrtc.WithMediaEngine(m),
+        webrtc.WithInterceptorRegistry(i),
+    )
+    
+    // Create peer connection
+    pc, err := api.NewPeerConnection(webrtc.Configuration{})
+    if err != nil {
+        panic(err)
+    }
+    defer pc.Close()
+    
+    // Process congestion control feedback
+    pc.OnRTCP(func(packets []rtcp.Packet) {
+        for _, pkt := range packets {
+            if ccfb, ok := pkt.(*rtcp.CCFeedbackReport); ok {
+                processCongestionFeedback(ccfb)
+            }
+        }
+    })
+    
+    log.Println("RFC 8888 configured")
+    
+    select {}
+}
+
+func processCongestionFeedback(ccfb *rtcp.CCFeedbackReport) {
+    log.Printf("Congestion feedback for SSRC %d", ccfb.MediaSSRC)
+    
+    for _, block := range ccfb.MetricBlocks {
+        received := 0
+        lost := 0
+        ecnMarked := 0
+        
+        for _, metric := range block.PacketMetrics {
+            if metric.Received {
+                received++
+                if metric.ECN > 0 {
+                    ecnMarked++
+                }
+            } else {
+                lost++
+            }
+        }
+        
+        log.Printf("  Block: base_seq=%d, received=%d, lost=%d, ecn_marked=%d",
+            block.BaseSequenceNumber, received, lost, ecnMarked)
+        
+        // Use feedback for congestion control
+        if ecnMarked > 0 || lost > 0 {
+            log.Println("  -> Congestion detected, reducing bitrate")
+        }
+    }
+}
+```
+
+## ECN Support
+
+RFC 8888 supports Explicit Congestion Notification:
+
+```go
+// ECN marks in IP header
+const (
+    ECNNotECT = 0 // Not ECN-Capable Transport
+    ECNECT1   = 1 // ECN-Capable Transport(1)
+    ECNECT0   = 2 // ECN-Capable Transport(0)
+    ECN_CE    = 3 // Congestion Experienced
+)
+
+// Check for congestion
+func checkECN(metric PacketMetric) bool {
+    return metric.ECN == ECN_CE
+}
+```
+
+<Info>
+ECN allows routers to signal congestion without dropping packets, enabling faster congestion response.
+</Info>
+
+## Comparison with TWCC
+
+### RFC 8888
+
+**Advantages:**
+- Supports ECN marking
+- More detailed per-packet info
+- Standards-based (IETF RFC)
+
+**Disadvantages:**
+- Less widely deployed
+- Larger report sizes
+- More complex parsing
+
+### TWCC (Transport-Wide CC)
+
+**Advantages:**
+- Widely supported (Chrome, Firefox)
+- Compact encoding
+- Proven in production
+
+**Disadvantages:**
+- No ECN support
+- Less detailed feedback
+
+```go
+// Choose based on your needs:
+// - Use TWCC for broad compatibility
+// - Use RFC 8888 for ECN support or future-proofing
+```
+
+## Integration Patterns
+
+### With Custom Congestion Control
+
+```go
+import (
+    "github.com/pion/interceptor/pkg/rfc8888"
+    "github.com/pion/rtcp"
+)
+
+type CongestionController struct {
+    targetBitrate int
+    currentBitrate int
+}
+
+func (cc *CongestionController) ProcessFeedback(ccfb *rtcp.CCFeedbackReport) {
+    // Analyze feedback
+    congestionLevel := cc.analyzeCongestion(ccfb)
+    
+    switch {
+    case congestionLevel > 0.1: // Severe congestion
+        cc.currentBitrate = int(float64(cc.currentBitrate) * 0.85) // Reduce 15%
+        log.Printf("Severe congestion, reducing to %d bps", cc.currentBitrate)
+        
+    case congestionLevel > 0.05: // Moderate congestion
+        cc.currentBitrate = int(float64(cc.currentBitrate) * 0.95) // Reduce 5%
+        log.Printf("Moderate congestion, reducing to %d bps", cc.currentBitrate)
+        
+    case congestionLevel < 0.01: // No congestion
+        // Slowly increase
+        cc.currentBitrate = min(cc.currentBitrate+50000, cc.targetBitrate)
+        log.Printf("No congestion, increasing to %d bps", cc.currentBitrate)
+    }
+}
+
+func (cc *CongestionController) analyzeCongestion(ccfb *rtcp.CCFeedbackReport) float64 {
+    totalPackets := 0
+    lostPackets := 0
+    ecnMarked := 0
+    
+    for _, block := range ccfb.MetricBlocks {
+        for _, metric := range block.PacketMetrics {
+            totalPackets++
+            if !metric.Received {
+                lostPackets++
+            } else if metric.ECN == ECN_CE {
+                ecnMarked++
+            }
+        }
+    }
+    
+    if totalPackets == 0 {
+        return 0
+    }
+    
+    // Combine loss and ECN marks
+    return float64(lostPackets+ecnMarked) / float64(totalPackets)
+}
+```
+
+### With Bandwidth Estimation
+
+```go
+type BandwidthEstimator struct {
+    recorder *rfc8888.Recorder
+}
+
+func (be *BandwidthEstimator) EstimateBandwidth(ccfb *rtcp.CCFeedbackReport) int {
+    // Calculate sending rate
+    sendRate := be.calculateSendRate(ccfb)
+    
+    // Calculate loss rate
+    lossRate := be.calculateLossRate(ccfb)
+    
+    // Simple estimation: reduce send rate by loss percentage
+    availableBW := int(float64(sendRate) * (1.0 - lossRate))
+    
+    return availableBW
+}
+
+func (be *BandwidthEstimator) calculateSendRate(ccfb *rtcp.CCFeedbackReport) int {
+    // Calculate based on packet count and time window
+    // Implementation depends on your specific needs
+    return 1_000_000 // Example: 1 Mbps
+}
+
+func (be *BandwidthEstimator) calculateLossRate(ccfb *rtcp.CCFeedbackReport) float64 {
+    totalPackets := 0
+    lostPackets := 0
+    
+    for _, block := range ccfb.MetricBlocks {
+        for _, metric := range block.PacketMetrics {
+            totalPackets++
+            if !metric.Received {
+                lostPackets++
+            }
+        }
+    }
+    
+    if totalPackets == 0 {
+        return 0
+    }
+    
+    return float64(lostPackets) / float64(totalPackets)
+}
+```
+
+## Report Intervals
+
+Choose interval based on your needs:
+
+```go
+// Real-time gaming - fast response
+rfc8888.SendInterval(50 * time.Millisecond)
+
+// Video conferencing - balanced
+rfc8888.SendInterval(100 * time.Millisecond)
+
+// Streaming - less frequent
+rfc8888.SendInterval(200 * time.Millisecond)
+
+// Low bandwidth - minimize overhead
+rfc8888.SendInterval(500 * time.Millisecond)
+```
+
+## Performance Considerations
+
+### Memory Usage
+
+```go
+// Memory per stream
+packetsPerReport := 100  // Typical
+bytesPerPacket := 8      // Minimal packet info
+memory := packetsPerReport * bytesPerPacket // ~800 bytes per stream
+```
+
+### CPU Usage
+
+- **Recording**: Minimal overhead per packet
+- **Report generation**: ~1-2ms per report
+- **Overall**: < 1% CPU for typical usage
+
+### Network Overhead
+
+```go
+// Calculate RTCP bandwidth
+func calculateRTCPOverhead(interval time.Duration, packetsPerReport int) float64 {
+    headerSize := 20 // RTCP header
+    perPacketSize := 4 // Metric size
+    reportSize := headerSize + (packetsPerReport * perPacketSize)
+    
+    reportsPerSecond := float64(time.Second) / float64(interval)
+    bytesPerSecond := float64(reportSize) * reportsPerSecond
+    
+    return bytesPerSecond * 8 // bits per second
+}
+
+overhead := calculateRTCPOverhead(100*time.Millisecond, 100)
+log.Printf("RTCP overhead: %.0f bps", overhead) // ~32 Kbps
+```
+
+## Best Practices
+
+1. **Interval Selection**: Balance responsiveness with overhead
+2. **ECN Support**: Enable ECN in network infrastructure for best results
+3. **Combine with Loss Detection**: Use alongside packet loss monitoring
+4. **Bitrate Adaptation**: Implement smooth bitrate changes
+5. **Testing**: Verify feedback loop stability under various conditions
+
+<Warning>
+RFC 8888 feedback creates a control loop. Ensure your congestion controller is stable and doesn't oscillate.
+</Warning>
+
+## Troubleshooting
+
+<Accordion title="No feedback reports received">
+Check:
+1. Interceptor is properly registered
+2. RTP packets are flowing
+3. RTCP is not blocked
+4. Correct report interval configured
+</Accordion>
+
+<Accordion title="High RTCP bandwidth usage">
+Reduce overhead:
+1. Increase send interval
+2. Limit packet metrics per report
+3. Use sampling (not all packets)
+</Accordion>
+
+<Accordion title="ECN marks not appearing">
+Verify:
+1. Network infrastructure supports ECN
+2. OS has ECN enabled
+3. No middleboxes clearing ECN bits
+</Accordion>
+
+## Related Interceptors
+
+- [TWCC](/interceptors/twcc) - Alternative congestion control feedback
+- [GCC](/interceptors/gcc) - Congestion control algorithm that can use this feedback
+- [Stats](/interceptors/stats) - Monitor overall stream quality

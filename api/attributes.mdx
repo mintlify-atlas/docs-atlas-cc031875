@@ -1,0 +1,269 @@
+---
+title: "Attributes"
+description: "Generic key/value store for passing metadata between interceptors"
+---
+
+The `Attributes` type is a generic key/value store used by interceptors to pass metadata and unmarshalled packet data through the processing pipeline.
+
+## Type Definition
+
+```go
+type Attributes map[any]any
+```
+
+## Methods
+
+### Get
+
+```go
+func (a Attributes) Get(key any) any
+```
+
+Returns the attribute associated with the given key.
+
+<ParamField path="key" type="any">
+  The key to look up in the attributes map
+</ParamField>
+
+**Returns:** `any` - The value associated with the key, or nil if not found
+
+### Set
+
+```go
+func (a Attributes) Set(key any, val any)
+```
+
+Sets the attribute associated with the given key to the specified value.
+
+<ParamField path="key" type="any">
+  The key to set in the attributes map
+</ParamField>
+
+<ParamField path="val" type="any">
+  The value to associate with the key
+</ParamField>
+
+### GetRTPHeader
+
+```go
+func (a Attributes) GetRTPHeader(raw []byte) (*rtp.Header, error)
+```
+
+Gets the RTP header if present in the attributes. If not present, it will be unmarshalled from the raw byte slice and stored in the attributes for future use.
+
+<ParamField path="raw" type="[]byte">
+  Raw packet bytes to unmarshal if header is not cached
+</ParamField>
+
+**Returns:**
+- `*rtp.Header` - The RTP header
+- `error` - Error if unmarshalling fails or invalid type in cache
+
+### GetRTCPPackets
+
+```go
+func (a Attributes) GetRTCPPackets(raw []byte) ([]rtcp.Packet, error)
+```
+
+Gets the RTCP packets if present in the attributes. If not present, they will be unmarshalled from the raw byte slice and stored in the attributes for future use.
+
+<ParamField path="raw" type="[]byte">
+  Raw packet bytes to unmarshal if packets are not cached
+</ParamField>
+
+**Returns:**
+- `[]rtcp.Packet` - Slice of RTCP packets
+- `error` - Error if unmarshalling fails or invalid type in cache
+
+## Usage Example
+
+### Basic Get/Set
+
+```go
+import "github.com/pion/interceptor"
+
+// Create attributes
+attrs := make(interceptor.Attributes)
+
+// Store custom data
+attrs.Set("timestamp", time.Now())
+attrs.Set("ssrc", uint32(12345))
+
+// Retrieve data
+if ts, ok := attrs.Get("timestamp").(time.Time); ok {
+    fmt.Printf("Timestamp: %v\n", ts)
+}
+```
+
+### Using GetRTPHeader
+
+```go
+import (
+    "github.com/pion/interceptor"
+    "github.com/pion/rtp"
+)
+
+func processRTP(b []byte, a interceptor.Attributes) error {
+    if a == nil {
+        a = make(interceptor.Attributes)
+    }
+    
+    // GetRTPHeader will unmarshal once and cache the result
+    header, err := a.GetRTPHeader(b)
+    if err != nil {
+        return err
+    }
+    
+    fmt.Printf("SSRC: %d, SeqNum: %d\n", 
+        header.SSRC, header.SequenceNumber)
+    
+    // Subsequent calls return the cached header
+    header2, _ := a.GetRTPHeader(b)
+    // header2 is the same object as header
+    
+    return nil
+}
+```
+
+### Custom Attribute Keys
+
+```go
+import "github.com/pion/interceptor"
+
+// Define custom key types for type safety
+type contextKey int
+
+const (
+    arrivalTimeKey contextKey = iota
+    processingDelayKey
+    customDataKey
+)
+
+func (i *MyInterceptor) BindRemoteStream(
+    info *interceptor.StreamInfo,
+    reader interceptor.RTPReader,
+) interceptor.RTPReader {
+    return interceptor.RTPReaderFunc(func(b []byte, a interceptor.Attributes) (int, interceptor.Attributes, error) {
+        n, attr, err := reader.Read(b, a)
+        if err != nil {
+            return 0, nil, err
+        }
+        
+        if attr == nil {
+            attr = make(interceptor.Attributes)
+        }
+        
+        // Add arrival time
+        attr.Set(arrivalTimeKey, time.Now())
+        
+        // Add custom processing metadata
+        attr.Set(customDataKey, map[string]any{
+            "interceptor": "MyInterceptor",
+            "version":     "1.0",
+        })
+        
+        return n, attr, nil
+    })
+}
+```
+
+### Chaining with Attributes
+
+```go
+func (i *Interceptor1) BindRemoteStream(
+    info *interceptor.StreamInfo,
+    reader interceptor.RTPReader,
+) interceptor.RTPReader {
+    return interceptor.RTPReaderFunc(func(b []byte, a interceptor.Attributes) (int, interceptor.Attributes, error) {
+        n, attr, err := reader.Read(b, a)
+        if err != nil {
+            return 0, nil, err
+        }
+        
+        if attr == nil {
+            attr = make(interceptor.Attributes)
+        }
+        
+        // First interceptor adds timestamp
+        attr.Set("receivedAt", time.Now())
+        
+        return n, attr, nil
+    })
+}
+
+func (i *Interceptor2) BindRemoteStream(
+    info *interceptor.StreamInfo,
+    reader interceptor.RTPReader,
+) interceptor.RTPReader {
+    return interceptor.RTPReaderFunc(func(b []byte, a interceptor.Attributes) (int, interceptor.Attributes, error) {
+        n, attr, err := reader.Read(b, a)
+        if err != nil {
+            return 0, nil, err
+        }
+        
+        // Second interceptor uses timestamp from first
+        if receivedAt, ok := attr.Get("receivedAt").(time.Time); ok {
+            delay := time.Since(receivedAt)
+            attr.Set("processingDelay", delay)
+        }
+        
+        return n, attr, nil
+    })
+}
+```
+
+## Performance Considerations
+
+### Caching Headers
+
+The `GetRTPHeader` and `GetRTCPPackets` methods automatically cache unmarshalled data:
+
+```go
+// First call unmarshals and caches
+header1, _ := attr.GetRTPHeader(buf)
+
+// Second call returns cached header (no unmarshalling)
+header2, _ := attr.GetRTPHeader(buf)
+
+// header1 and header2 point to the same object
+```
+
+### Avoid Repeated Unmarshalling
+
+```go
+// BAD: Unmarshals every time
+for i := 0; i < 10; i++ {
+    header := &rtp.Header{}
+    header.Unmarshal(buf)
+    // use header
+}
+
+// GOOD: Unmarshal once, cache in attributes
+attr := make(interceptor.Attributes)
+for i := 0; i < 10; i++ {
+    header, _ := attr.GetRTPHeader(buf)
+    // use header (cached after first iteration)
+}
+```
+
+## Common Attribute Keys
+
+While you can use any key type, some packages define standard keys:
+
+```go
+import "github.com/pion/interceptor/pkg/rtpfb"
+
+// CCFB report data
+if report, ok := attr.Get(rtpfb.CCFBAttributesKey).(rtpfb.Report); ok {
+    fmt.Printf("RTT: %v\n", report.RTT)
+}
+```
+
+## See Also
+
+- [Interceptor](/api/interceptor) - Uses Attributes in all methods
+- [StreamInfo](/api/streaminfo) - Contains stream-level attributes
+
+## Reference
+
+For more details, see the [pkg.go.dev documentation](https://pkg.go.dev/github.com/pion/interceptor#Attributes).

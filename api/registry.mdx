@@ -1,0 +1,204 @@
+---
+title: "Registry"
+description: "Collector for interceptor factories"
+---
+
+The `Registry` type is a collector for interceptor factories that can build a composite interceptor from all registered factories.
+
+## Type Definition
+
+```go
+type Registry struct {
+    factories []Factory
+}
+```
+
+<ResponseField name="factories" type="[]Factory">
+  Internal slice of registered interceptor factories
+</ResponseField>
+
+## Methods
+
+### Add
+
+```go
+func (r *Registry) Add(f Factory)
+```
+
+Adds a new interceptor factory to the registry.
+
+<ParamField path="f" type="Factory">
+  The factory to add to the registry
+</ParamField>
+
+### Build
+
+```go
+func (r *Registry) Build(id string) (Interceptor, error)
+```
+
+Constructs a single interceptor from all registered factories. If no factories are registered, returns a NoOp interceptor. If multiple factories are registered, returns a Chain containing all the constructed interceptors.
+
+<ParamField path="id" type="string">
+  Unique identifier passed to all factories (typically a PeerConnection ID)
+</ParamField>
+
+**Returns:**
+- `Interceptor` - Either a NoOp, a single interceptor, or a Chain of interceptors
+- `error` - Any error that occurred during construction
+
+## Usage Example
+
+```go
+import (
+    "github.com/pion/interceptor"
+    "github.com/pion/interceptor/pkg/nack"
+    "github.com/pion/interceptor/pkg/report"
+    "github.com/pion/interceptor/pkg/stats"
+)
+
+// Create a registry
+registry := &interceptor.Registry{}
+
+// Add factories
+nackGen, _ := nack.NewGeneratorInterceptor()
+registry.Add(nackGen)
+
+nackResp, _ := nack.NewResponderInterceptor()
+registry.Add(nackResp)
+
+reportRecv, _ := report.NewReceiverInterceptor()
+registry.Add(reportRecv)
+
+statsInt, _ := stats.NewInterceptor()
+registry.Add(statsInt)
+
+// Build a composite interceptor for a PeerConnection
+i, err := registry.Build("peer-connection-1")
+if err != nil {
+    panic(err)
+}
+defer i.Close()
+
+// Use the interceptor
+// ...
+```
+
+## Integration with WebRTC
+
+```go
+import (
+    "github.com/pion/interceptor"
+    "github.com/pion/webrtc/v4"
+)
+
+func setupPeerConnection() (*webrtc.PeerConnection, error) {
+    // Create MediaEngine and register codecs
+    m := &webrtc.MediaEngine{}
+    if err := m.RegisterDefaultCodecs(); err != nil {
+        return nil, err
+    }
+    
+    // Create InterceptorRegistry
+    ir := &interceptor.Registry{}
+    
+    // Register default interceptors
+    if err := webrtc.RegisterDefaultInterceptors(m, ir); err != nil {
+        return nil, err
+    }
+    
+    // Add custom interceptors
+    customFactory, _ := nack.NewGeneratorInterceptor(
+        nack.GeneratorSize(512),
+    )
+    ir.Add(customFactory)
+    
+    // Create API and PeerConnection
+    api := webrtc.NewAPI(
+        webrtc.WithMediaEngine(m),
+        webrtc.WithInterceptorRegistry(ir),
+    )
+    
+    return api.NewPeerConnection(webrtc.Configuration{})
+}
+```
+
+## Advanced Usage: Conditional Registration
+
+```go
+func createRegistry(config Config) *interceptor.Registry {
+    registry := &interceptor.Registry{}
+    
+    // Always add stats
+    statsFactory, _ := stats.NewInterceptor()
+    registry.Add(statsFactory)
+    
+    // Conditionally add NACK
+    if config.EnableNACK {
+        nackGen, _ := nack.NewGeneratorInterceptor(
+            nack.GeneratorSize(config.NACKBufferSize),
+        )
+        registry.Add(nackGen)
+        
+        nackResp, _ := nack.NewResponderInterceptor(
+            nack.ResponderSize(config.NACKBufferSize),
+        )
+        registry.Add(nackResp)
+    }
+    
+    // Conditionally add congestion control
+    if config.EnableCC {
+        ccFactory, _ := cc.NewInterceptor(nil)
+        registry.Add(ccFactory)
+    }
+    
+    return registry
+}
+```
+
+## Behavior
+
+### Empty Registry
+
+If `Build()` is called on an empty registry:
+
+```go
+registry := &interceptor.Registry{}
+i, _ := registry.Build("id")
+// i will be a &interceptor.NoOp{}
+```
+
+### Single Factory
+
+If only one factory is registered:
+
+```go
+registry := &interceptor.Registry{}
+registry.Add(someFactory)
+i, _ := registry.Build("id")
+// i will be the single interceptor from someFactory
+```
+
+### Multiple Factories
+
+If multiple factories are registered:
+
+```go
+registry := &interceptor.Registry{}
+registry.Add(factory1)
+registry.Add(factory2)
+registry.Add(factory3)
+i, _ := registry.Build("id")
+// i will be a *interceptor.Chain containing all three interceptors
+```
+
+## See Also
+
+- [Factory](/api/factory) - Interface for creating interceptors
+- [Chain](/api/chain) - Combines multiple interceptors
+- [Interceptor](/api/interceptor) - The core interface
+- [NoOp](/api/noop) - Default empty interceptor
+
+## Reference
+
+For more details, see the [pkg.go.dev documentation](https://pkg.go.dev/github.com/pion/interceptor#Registry).

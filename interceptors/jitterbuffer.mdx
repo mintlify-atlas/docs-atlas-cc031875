@@ -1,0 +1,373 @@
+---
+title: Jitter Buffer Interceptor
+description: Smooth packet arrival and compensate for network jitter
+---
+
+The Jitter Buffer interceptor provides packet buffering and reordering to smooth out network jitter and ensure consistent packet delivery timing.
+
+## Overview
+
+The Jitter Buffer:
+
+- **Buffers packets**: Holds packets temporarily before delivering them
+- **Reorders packets**: Delivers packets in sequence number order
+- **Compensates jitter**: Smooths out variation in packet arrival times
+- **Handles loss**: Detects and reports missing packets
+
+## Basic Usage
+
+```go
+import (
+    "github.com/pion/interceptor"
+    "github.com/pion/interceptor/pkg/jitterbuffer"
+)
+
+// Create jitter buffer interceptor
+jbFactory, err := jitterbuffer.NewInterceptor()
+if err != nil {
+    panic(err)
+}
+
+// Register with interceptor registry
+m := &interceptor.Registry{}
+m.Add(jbFactory)
+```
+
+## Configuration Options
+
+### WithLoggerFactory
+
+Configure logging for debugging:
+
+```go
+jbFactory, err := jitterbuffer.NewInterceptor(
+    jitterbuffer.WithLoggerFactory(loggerFactory),
+)
+```
+
+### Log
+
+Set a specific logger instance:
+
+```go
+jbFactory, err := jitterbuffer.NewInterceptor(
+    jitterbuffer.Log(myLogger),
+)
+```
+
+## How It Works
+
+### Buffering States
+
+The jitter buffer operates in two states:
+
+1. **Buffering**: Initial state, collecting packets before playback
+2. **Emitting**: Delivering packets in order after buffer is filled
+
+```go
+const (
+    StateBuffering  = "buffering"  // Filling initial buffer
+    StateEmitting   = "emitting"   // Delivering packets
+)
+```
+
+### Packet Flow
+
+1. **Incoming packet**: Arrives from network
+2. **Push to buffer**: Packet is stored in priority queue
+3. **Check state**: Buffer state determines next action
+4. **Pop from buffer**: Packets delivered in sequence order
+5. **Forward**: Packet passed to next interceptor
+
+<Info>
+The buffer uses a priority queue to maintain packets in sequence number order, even if they arrive out of order.
+</Info>
+
+## Using the Jitter Buffer
+
+### Basic Example
+
+```go
+package main
+
+import (
+    "log"
+    
+    "github.com/pion/interceptor"
+    "github.com/pion/interceptor/pkg/jitterbuffer"
+    "github.com/pion/webrtc/v4"
+)
+
+func main() {
+    // Create jitter buffer
+    jbFactory, err := jitterbuffer.NewInterceptor()
+    if err != nil {
+        panic(err)
+    }
+    
+    // Create interceptor registry
+    i := &interceptor.Registry{}
+    i.Add(jbFactory)
+    
+    // Create media engine and API
+    m := &webrtc.MediaEngine{}
+    if err := m.RegisterDefaultCodecs(); err != nil {
+        panic(err)
+    }
+    
+    api := webrtc.NewAPI(
+        webrtc.WithMediaEngine(m),
+        webrtc.WithInterceptorRegistry(i),
+    )
+    
+    // Create peer connection
+    pc, err := api.NewPeerConnection(webrtc.Configuration{})
+    if err != nil {
+        panic(err)
+    }
+    defer pc.Close()
+    
+    log.Println("Jitter buffer configured")
+}
+```
+
+## Error Handling
+
+The jitter buffer can return specific errors:
+
+### ErrPopWhileBuffering
+
+Returned when trying to read before the buffer is filled:
+
+```go
+import "github.com/pion/interceptor/pkg/jitterbuffer"
+
+// When reading from RTP stream
+n, attr, err := rtpReader.Read(buffer, nil)
+if err == jitterbuffer.ErrPopWhileBuffering {
+    // Buffer is still filling, retry later
+    time.Sleep(10 * time.Millisecond)
+    n, attr, err = rtpReader.Read(buffer, nil)
+}
+```
+
+<Note>
+This error is normal during startup. Retry the read operation after a short delay.
+</Note>
+
+### ErrBufferUnderrun
+
+Returned when the buffer is depleted during playback:
+
+```go
+if err == jitterbuffer.ErrBufferUnderrun {
+    // Network is too slow or packet loss occurred
+    log.Println("Warning: Buffer underrun, possible packet loss")
+    
+    // Handle gracefully:
+    // - Insert silence/freeze frame
+    // - Adjust playback rate
+    // - Increase buffer size
+}
+```
+
+## Buffer Size
+
+The default buffer holds 50 packets before emitting:
+
+```go
+// Default buffer depth
+const defaultBufferDepth = 50
+```
+
+This provides ~1 second of buffering for typical video streams (50fps) or ~1 second for audio (50 packets at 20ms each).
+
+## Handling Packet Reordering
+
+```go
+// The jitter buffer automatically reorders packets
+// Packets arriving as: 100, 102, 101, 103
+// Will be delivered as: 100, 101, 102, 103
+
+// Example: Reading from jitter buffered stream
+for {
+    n, attr, err := rtpReader.Read(buffer, nil)
+    if err != nil {
+        if err == jitterbuffer.ErrPopWhileBuffering {
+            // Still buffering
+            continue
+        }
+        if err == jitterbuffer.ErrBufferUnderrun {
+            // Handle underrun
+            insertSilence()
+            continue
+        }
+        log.Printf("Error reading: %v", err)
+        break
+    }
+    
+    // Process packet (will be in order)
+    processPacket(buffer[:n], attr)
+}
+```
+
+## Performance Characteristics
+
+### Latency
+
+- **Initial buffering**: 50 packets worth of latency (~1 second)
+- **Steady state**: Minimal additional latency
+- **Reordering**: Handled without additional delay
+
+### Memory Usage
+
+```go
+// Memory per stream
+packetSize := 1500 // bytes (typical MTU)
+bufferDepth := 50
+memory := packetSize * bufferDepth // ~75KB per stream
+```
+
+### CPU Usage
+
+- **Push**: O(log n) - priority queue insertion
+- **Pop**: O(log n) - priority queue extraction
+- **Minimal overhead**: Efficient for real-time processing
+
+## Integration Patterns
+
+### With Packet Loss Detection
+
+```go
+import (
+    "github.com/pion/interceptor/pkg/jitterbuffer"
+    "github.com/pion/interceptor/pkg/nack"
+)
+
+// Add both jitter buffer and NACK
+jbFactory, _ := jitterbuffer.NewInterceptor()
+i.Add(jbFactory)
+
+nackFactory, _ := nack.NewGeneratorInterceptor()
+i.Add(nackFactory)
+
+// Jitter buffer reorders packets
+// NACK requests missing packets
+```
+
+### With Stats Monitoring
+
+```go
+import (
+    "github.com/pion/interceptor/pkg/jitterbuffer"
+    "github.com/pion/interceptor/pkg/stats"
+)
+
+// Monitor buffer performance
+jbFactory, _ := jitterbuffer.NewInterceptor()
+i.Add(jbFactory)
+
+statsFactory, _ := stats.NewInterceptor()
+i.Add(statsFactory)
+
+statsFactory.OnNewPeerConnection(func(id string, getter stats.Getter) {
+    go func() {
+        for {
+            time.Sleep(5 * time.Second)
+            stats := getter.Get(ssrc)
+            if stats != nil {
+                // Check jitter levels
+                log.Printf("Jitter: %.2f", stats.InboundRTPStreamStats.Jitter)
+            }
+        }
+    }()
+})
+```
+
+## Adaptive Jitter Buffer
+
+For advanced use cases, consider implementing adaptive buffering:
+
+```go
+type AdaptiveBuffer struct {
+    minDepth    int
+    maxDepth    int
+    targetDepth int
+    jbFactory   *jitterbuffer.InterceptorFactory
+}
+
+func (ab *AdaptiveBuffer) AdjustForJitter(jitter float64) {
+    // Adjust buffer depth based on measured jitter
+    if jitter > 30 {
+        ab.targetDepth = min(ab.targetDepth+5, ab.maxDepth)
+    } else if jitter < 10 {
+        ab.targetDepth = max(ab.targetDepth-5, ab.minDepth)
+    }
+    
+    log.Printf("Adjusted buffer depth to %d (jitter: %.2f)",
+        ab.targetDepth, jitter)
+}
+```
+
+## Best Practices
+
+1. **Handle Errors**: Always handle `ErrPopWhileBuffering` and `ErrBufferUnderrun`
+2. **Monitor Underruns**: Track buffer underruns as quality indicators
+3. **Combine with NACK**: Use with NACK for lost packet recovery
+4. **Appropriate for Use Case**:
+   - Voice calls: Lower buffer (20-30 packets)
+   - Video streaming: Default buffer (50 packets)
+   - Recorded playback: Larger buffer (100+ packets)
+
+<Warning>
+Jitter buffering adds latency. For real-time applications requiring minimal latency, use a smaller buffer or consider disabling the jitter buffer entirely.
+</Warning>
+
+## When to Use
+
+### Good Use Cases
+
+- Video streaming over unreliable networks
+- Voice calls with high jitter
+- Playback of recorded media
+- Any scenario with variable packet arrival times
+
+### Not Recommended For
+
+- Ultra-low latency applications (< 100ms)
+- Networks with consistent timing
+- Applications that handle reordering themselves
+
+## Troubleshooting
+
+<Accordion title="Frequent buffer underruns">
+Causes:
+- Network too slow for bitrate
+- Excessive packet loss
+- Buffer too small
+
+Solutions:
+- Increase buffer size
+- Reduce media bitrate
+- Enable FEC or NACK
+</Accordion>
+
+<Accordion title="High latency">
+The buffer introduces latency by design. To reduce:
+- Decrease buffer depth (custom implementation needed)
+- Use only for problematic streams
+- Consider adaptive buffering
+</Accordion>
+
+<Accordion title="Out of order packets still appearing">
+Ensure:
+- Jitter buffer is properly bound to stream
+- Reading from correct reader
+- No other reordering in pipeline
+</Accordion>
+
+## Related Interceptors
+
+- [NACK](/interceptors/nack) - Request missing packets
+- [Stats](/interceptors/stats) - Monitor jitter and loss
+- [FlexFEC](/interceptors/flexfec) - Forward error correction

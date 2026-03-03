@@ -1,80 +1,499 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: "Quick Start"
+description: "Build your first interceptor with a complete working example"
 ---
 
-## Get started in three steps
+# Quick Start
 
-Get your documentation site running locally and make your first customization.
+This guide will walk you through creating a complete working example using Pion Interceptor. You'll build a simple RTP packet logger that demonstrates the core concepts.
 
-### Step 1: Set up your local environment
+## What You'll Build
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
+You'll create a custom interceptor that:
+- Logs all outgoing RTP packets from local streams
+- Counts packets per stream
+- Demonstrates the interceptor lifecycle
+
+## Prerequisites
+
+Make sure you have [installed Pion Interceptor](/installation) before continuing.
+
+## Understanding the Core Types
+
+Before writing code, let's understand the key types you'll work with:
+
+### Interceptor Interface
+
+The main interface that all interceptors must implement:
+
+```go
+type Interceptor interface {
+    BindRTCPReader(reader RTCPReader) RTCPReader
+    BindRTCPWriter(writer RTCPWriter) RTCPWriter
+    BindLocalStream(info *StreamInfo, writer RTPWriter) RTPWriter
+    BindRemoteStream(info *StreamInfo, reader RTPReader) RTPReader
+    UnbindLocalStream(info *StreamInfo)
+    UnbindRemoteStream(info *StreamInfo)
+    Close() error
+}
+```
+
+### StreamInfo
+
+Contains metadata about an RTP stream:
+
+```go
+type StreamInfo struct {
+    ID                  string
+    SSRC                uint32
+    PayloadType         uint8
+    MimeType            string
+    ClockRate           uint32
+    Channels            uint16
+    RTCPFeedback        []RTCPFeedback
+    RTPHeaderExtensions []RTPHeaderExtension
+    // ... additional fields
+}
+```
+
+### Attributes
+
+A key-value store for passing metadata between interceptors:
+
+```go
+type Attributes map[any]any
+
+func (a Attributes) Get(key any) any
+func (a Attributes) Set(key any, val any)
+func (a Attributes) GetRTPHeader(raw []byte) (*rtp.Header, error)
+```
+
+## Step 1: Create a Custom Interceptor
+
+Create a new file `logger_interceptor.go`:
+
+```go logger_interceptor.go
+package main
+
+import (
+    "fmt"
+    "sync"
+
+    "github.com/pion/interceptor"
+    "github.com/pion/rtp"
+)
+
+// LoggerInterceptor logs RTP packets for each stream
+type LoggerInterceptor struct {
+    interceptor.NoOp
+    mu           sync.Mutex
+    packetCounts map[uint32]int
+}
+
+// NewLoggerInterceptor creates a new logger interceptor
+func NewLoggerInterceptor() *LoggerInterceptor {
+    return &LoggerInterceptor{
+        packetCounts: make(map[uint32]int),
+    }
+}
+
+// BindLocalStream is called when a new local stream is created
+func (l *LoggerInterceptor) BindLocalStream(info *interceptor.StreamInfo, writer interceptor.RTPWriter) interceptor.RTPWriter {
+    fmt.Printf("[Logger] New local stream bound - SSRC: %d, PayloadType: %d\n", 
+        info.SSRC, info.PayloadType)
     
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
+    // Return a writer that logs each packet
+    return interceptor.RTPWriterFunc(func(header *rtp.Header, payload []byte, attributes interceptor.Attributes) (int, error) {
+        // Increment packet count
+        l.mu.Lock()
+        l.packetCounts[header.SSRC]++
+        count := l.packetCounts[header.SSRC]
+        l.mu.Unlock()
+        
+        // Log packet information
+        fmt.Printf("[Logger] SSRC: %d, Seq: %d, Timestamp: %d, Payload: %d bytes, Count: %d\n",
+            header.SSRC, header.SequenceNumber, header.Timestamp, len(payload), count)
+        
+        // Pass the packet to the next writer in the chain
+        return writer.Write(header, payload, attributes)
+    })
+}
+
+// UnbindLocalStream is called when a stream is removed
+func (l *LoggerInterceptor) UnbindLocalStream(info *interceptor.StreamInfo) {
+    l.mu.Lock()
+    defer l.mu.Unlock()
     
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
+    count := l.packetCounts[info.SSRC]
+    delete(l.packetCounts, info.SSRC)
     
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+    fmt.Printf("[Logger] Stream unbound - SSRC: %d, Total packets: %d\n", 
+        info.SSRC, count)
+}
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+// Close cleans up the interceptor
+func (l *LoggerInterceptor) Close() error {
+    fmt.Println("[Logger] Interceptor closed")
+    return nil
+}
+```
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+<Info>
+Notice how we embed `interceptor.NoOp` - this provides default implementations for all methods we don't need to override.
+</Info>
 
-### Step 3: Go live
+## Step 2: Create a Test Application
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+Now create a `main.go` that uses your interceptor:
 
-## Next steps
+```go main.go
+package main
 
-Now that you have your docs running, explore these key features:
+import (
+    "fmt"
+    "time"
+
+    "github.com/pion/interceptor"
+    "github.com/pion/rtp"
+)
+
+func main() {
+    fmt.Println("Starting Pion Interceptor example...\n")
+    
+    // Create our custom logger interceptor
+    logger := NewLoggerInterceptor()
+    
+    // Create an interceptor chain
+    chain := interceptor.NewChain([]interceptor.Interceptor{logger})
+    defer chain.Close()
+    
+    // Simulate a stream being bound
+    streamInfo := &interceptor.StreamInfo{
+        SSRC:        12345,
+        PayloadType: 96,
+        MimeType:    "video/VP8",
+        ClockRate:   90000,
+    }
+    
+    // Bind the local stream with a writer that simulates sending packets
+    writer := chain.BindLocalStream(streamInfo, interceptor.RTPWriterFunc(
+        func(header *rtp.Header, payload []byte, attributes interceptor.Attributes) (int, error) {
+            // This is the final writer - in a real app, this would send to the network
+            return len(payload), nil
+        },
+    ))
+    
+    // Simulate sending 10 RTP packets
+    fmt.Println("\nSending packets...\n")
+    for i := uint16(0); i < 10; i++ {
+        header := &rtp.Header{
+            Version:        2,
+            SSRC:           12345,
+            SequenceNumber: i,
+            Timestamp:      uint32(i * 3000),
+            PayloadType:    96,
+        }
+        
+        payload := []byte(fmt.Sprintf("Packet %d", i))
+        
+        if _, err := writer.Write(header, payload, nil); err != nil {
+            fmt.Printf("Error writing packet: %v\n", err)
+            return
+        }
+        
+        // Small delay between packets
+        time.Sleep(100 * time.Millisecond)
+    }
+    
+    // Unbind the stream
+    fmt.Println("\nUnbinding stream...\n")
+    chain.UnbindLocalStream(streamInfo)
+    
+    fmt.Println("\nExample completed successfully!")
+}
+```
+
+## Step 3: Run Your Example
+
+<Steps>
+  <Step title="Initialize the module">
+    ```bash
+    go mod init github.com/yourusername/interceptor-example
+    go mod tidy
+    ```
+  </Step>
+  
+  <Step title="Run the application">
+    ```bash
+    go run .
+    ```
+  </Step>
+</Steps>
+
+You should see output like:
+
+```
+Starting Pion Interceptor example...
+
+[Logger] New local stream bound - SSRC: 12345, PayloadType: 96
+
+Sending packets...
+
+[Logger] SSRC: 12345, Seq: 0, Timestamp: 0, Payload: 8 bytes, Count: 1
+[Logger] SSRC: 12345, Seq: 1, Timestamp: 3000, Payload: 8 bytes, Count: 2
+[Logger] SSRC: 12345, Seq: 2, Timestamp: 6000, Payload: 8 bytes, Count: 3
+...
+[Logger] SSRC: 12345, Seq: 9, Timestamp: 27000, Payload: 8 bytes, Count: 10
+
+Unbinding stream...
+
+[Logger] Stream unbound - SSRC: 12345, Total packets: 10
+[Logger] Interceptor closed
+
+Example completed successfully!
+```
+
+## Step 4: Using Built-in Interceptors
+
+Let's extend the example to use the built-in NACK interceptor:
+
+```go nack_example.go
+package main
+
+import (
+    "fmt"
+    "time"
+
+    "github.com/pion/interceptor"
+    "github.com/pion/interceptor/pkg/nack"
+    "github.com/pion/rtcp"
+    "github.com/pion/rtp"
+)
+
+func nackExample() {
+    // Create a NACK responder factory
+    responderFactory, err := nack.NewResponderInterceptor()
+    if err != nil {
+        panic(err)
+    }
+    
+    // Build the interceptor
+    responder, err := responderFactory.NewInterceptor("")
+    if err != nil {
+        panic(err)
+    }
+    
+    // Create a chain with the NACK responder
+    chain := interceptor.NewChain([]interceptor.Interceptor{responder})
+    defer chain.Close()
+    
+    // Bind RTCP reader to receive NACK packets
+    rtcpReader := chain.BindRTCPReader(
+        interceptor.RTCPReaderFunc(func(b []byte, a interceptor.Attributes) (int, interceptor.Attributes, error) {
+            return len(b), nil, nil
+        }),
+    )
+    
+    // Bind local stream
+    streamInfo := &interceptor.StreamInfo{
+        SSRC:         5000,
+        RTCPFeedback: []interceptor.RTCPFeedback{{Type: "nack", Parameter: ""}},
+    }
+    
+    streamWriter := chain.BindLocalStream(streamInfo, 
+        interceptor.RTPWriterFunc(func(header *rtp.Header, payload []byte, attributes interceptor.Attributes) (int, error) {
+            fmt.Printf("Sending packet: Seq=%d\n", header.SequenceNumber)
+            return len(payload), nil
+        }),
+    )
+    
+    // Send some packets
+    for i := uint16(0); i < 5; i++ {
+        header := &rtp.Header{
+            Version:        2,
+            SSRC:           5000,
+            SequenceNumber: i,
+            Timestamp:      uint32(i * 3000),
+        }
+        streamWriter.Write(header, []byte{0x01, 0x02, 0x03}, nil)
+        time.Sleep(50 * time.Millisecond)
+    }
+    
+    // Simulate receiving a NACK for packet 2
+    fmt.Println("\nSimulating NACK for packet 2...")
+    nackPacket := &rtcp.TransportLayerNack{
+        MediaSSRC: 5000,
+        Nacks:     []rtcp.NackPair{{PacketID: 2}},
+    }
+    
+    nackBytes, _ := nackPacket.Marshal()
+    rtcpReader.Read(nackBytes, nil)
+    
+    time.Sleep(100 * time.Millisecond)
+    fmt.Println("\nNACK example completed!")
+}
+```
+
+## Understanding the Chain
+
+The `Chain` type allows you to combine multiple interceptors:
+
+```go
+// Create multiple interceptors
+logger := NewLoggerInterceptor()
+nackResponder, _ := nack.NewResponderInterceptor()
+nackInterceptor, _ := nackResponder.NewInterceptor("")
+
+// Chain them together - they execute in order
+chain := interceptor.NewChain([]interceptor.Interceptor{
+    logger,         // Logs first
+    nackInterceptor, // Then handles retransmission
+})
+```
+
+<Tip>
+Packets flow through interceptors in the order they appear in the chain. Place logging/monitoring interceptors first, and modifying interceptors later.
+</Tip>
+
+## Using the Registry
+
+For production applications, use the `Registry` to manage interceptor factories:
+
+```go
+import (
+    "github.com/pion/interceptor"
+    "github.com/pion/interceptor/pkg/nack"
+    "github.com/pion/interceptor/pkg/report"
+)
+
+func setupRegistry() (*interceptor.Registry, error) {
+    registry := &interceptor.Registry{}
+    
+    // Add NACK generator
+    nackGen, err := nack.NewGeneratorInterceptor()
+    if err != nil {
+        return nil, err
+    }
+    registry.Add(nackGen)
+    
+    // Add sender/receiver reports
+    reportFactory, err := report.NewInterceptor()
+    if err != nil {
+        return nil, err
+    }
+    registry.Add(reportFactory)
+    
+    return registry, nil
+}
+
+func main() {
+    registry, _ := setupRegistry()
+    
+    // Build the chain from registry
+    chain, _ := registry.Build("")
+    defer chain.Close()
+    
+    // Use the chain...
+}
+```
+
+## Key Concepts Review
 
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="NoOp Embedding" icon="layer-group">
+    Embed `interceptor.NoOp` to only implement the methods you need
+  </Card>
+  
+  <Card title="Bind Methods" icon="link">
+    `BindLocalStream` and `BindRemoteStream` are called when streams are created
+  </Card>
+  
+  <Card title="Unbind Methods" icon="link-slash">
+    `UnbindLocalStream` and `UnbindRemoteStream` clean up stream-specific resources
+  </Card>
+  
+  <Card title="Chain Execution" icon="arrow-right">
+    Interceptors in a chain execute sequentially in the order they're added
+  </Card>
 </CardGroup>
 
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>
+## Common Patterns
+
+### Pattern 1: Packet Inspection
+
+```go
+func (i *MyInterceptor) BindLocalStream(info *interceptor.StreamInfo, writer interceptor.RTPWriter) interceptor.RTPWriter {
+    return interceptor.RTPWriterFunc(func(header *rtp.Header, payload []byte, attributes interceptor.Attributes) (int, error) {
+        // Inspect the packet
+        fmt.Printf("Packet SSRC: %d, Seq: %d\n", header.SSRC, header.SequenceNumber)
+        
+        // Pass through unchanged
+        return writer.Write(header, payload, attributes)
+    })
+}
+```
+
+### Pattern 2: Packet Modification
+
+```go
+func (i *MyInterceptor) BindLocalStream(info *interceptor.StreamInfo, writer interceptor.RTPWriter) interceptor.RTPWriter {
+    return interceptor.RTPWriterFunc(func(header *rtp.Header, payload []byte, attributes interceptor.Attributes) (int, error) {
+        // Modify the header
+        header.Marker = true
+        
+        // Modify the payload
+        newPayload := append([]byte{0xFF}, payload...)
+        
+        // Write modified packet
+        return writer.Write(header, newPayload, attributes)
+    })
+}
+```
+
+### Pattern 3: Using Attributes
+
+```go
+func (i *MyInterceptor) BindRemoteStream(info *interceptor.StreamInfo, reader interceptor.RTPReader) interceptor.RTPReader {
+    return interceptor.RTPReaderFunc(func(b []byte, a interceptor.Attributes) (int, interceptor.Attributes, error) {
+        n, attr, err := reader.Read(b, a)
+        if err != nil {
+            return n, attr, err
+        }
+        
+        // Get the RTP header from attributes (cached)
+        header, err := attr.GetRTPHeader(b[:n])
+        if err != nil {
+            return n, attr, err
+        }
+        
+        // Store custom metadata
+        attr.Set("arrival_time", time.Now())
+        
+        return n, attr, nil
+    })
+}
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Explore Built-in Interceptors" icon="box" href="https://github.com/pion/interceptor/tree/master/pkg">
+    Learn from production-ready implementations like NACK, GCC, and TWCC
+  </Card>
+  
+  <Card title="API Reference" icon="book" href="https://pkg.go.dev/github.com/pion/interceptor">
+    Browse the complete API documentation
+  </Card>
+  
+  <Card title="Examples" icon="code" href="https://github.com/pion/interceptor/tree/master/examples">
+    View more complete examples in the repository
+  </Card>
+  
+  <Card title="Pion WebRTC Integration" icon="video" href="https://github.com/pion/webrtc">
+    Use interceptors with Pion WebRTC for full WebRTC applications
+  </Card>
+</CardGroup>
+
+<Warning>
+Remember to always call `Close()` on your interceptor chain to clean up resources when you're done.
+</Warning>

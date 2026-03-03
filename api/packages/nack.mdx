@@ -1,0 +1,327 @@
+---
+title: "NACK Package"
+description: "Automatic retransmission of lost RTP packets via NACK feedback"
+---
+
+The `nack` package provides interceptors for implementing Negative Acknowledgment (NACK) based packet loss recovery. It includes a generator that detects lost packets and requests retransmission, and a responder that handles retransmission requests.
+
+## Overview
+
+NACK is an RTCP feedback mechanism (RFC 4585) that allows receivers to request retransmission of lost packets. The package provides two complementary interceptors:
+
+- **GeneratorInterceptor**: Detects missing packets and sends NACK requests
+- **ResponderInterceptor**: Receives NACK requests and retransmits packets
+
+## GeneratorInterceptor
+
+Detects lost packets on incoming RTP streams and generates NACK feedback.
+
+### Factory
+
+```go
+type GeneratorInterceptorFactory struct {
+    // contains filtered or unexported fields
+}
+```
+
+### Constructor
+
+```go
+func NewGeneratorInterceptor(opts ...GeneratorOption) (*GeneratorInterceptorFactory, error)
+```
+
+Creates a new NACK generator factory with the specified options.
+
+### Options
+
+#### GeneratorSize
+
+```go
+func GeneratorSize(size uint16) GeneratorOption
+```
+
+Sets the size of the packet history buffer.
+
+<ParamField path="size" type="uint16">
+  Buffer size. Must be one of: 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768. Default: 512
+</ParamField>
+
+#### GeneratorSkipLastN
+
+```go
+func GeneratorSkipLastN(skipLastN uint16) GeneratorOption
+```
+
+Sets the number of most recent packets to ignore when generating NACKs.
+
+<ParamField path="skipLastN" type="uint16">
+  Number of packets before the last received packet to ignore. Default: 0
+</ParamField>
+
+#### GeneratorMaxNacksPerPacket
+
+```go
+func GeneratorMaxNacksPerPacket(maxNacks uint16) GeneratorOption
+```
+
+Sets the maximum number of times to NACK a missing packet.
+
+<ParamField path="maxNacks" type="uint16">
+  Maximum NACK count per packet. 0 = unlimited. Default: 0
+</ParamField>
+
+#### GeneratorInterval
+
+```go
+func GeneratorInterval(interval time.Duration) GeneratorOption
+```
+
+Sets how often to send NACK feedback.
+
+<ParamField path="interval" type="time.Duration">
+  NACK send interval. Default: 100ms
+</ParamField>
+
+#### WithGeneratorLoggerFactory
+
+```go
+func WithGeneratorLoggerFactory(loggerFactory logging.LoggerFactory) GeneratorOption
+```
+
+Sets a custom logger factory.
+
+#### GeneratorStreamsFilter
+
+```go
+func GeneratorStreamsFilter(filter func(info *interceptor.StreamInfo) bool) GeneratorOption
+```
+
+Sets a filter to selectively enable NACK for specific streams.
+
+### Usage Example
+
+```go
+import (
+    "time"
+    "github.com/pion/interceptor"
+    "github.com/pion/interceptor/pkg/nack"
+)
+
+// Create generator with custom options
+generator, err := nack.NewGeneratorInterceptor(
+    nack.GeneratorSize(1024),
+    nack.GeneratorSkipLastN(1),
+    nack.GeneratorMaxNacksPerPacket(3),
+    nack.GeneratorInterval(100 * time.Millisecond),
+)
+if err != nil {
+    panic(err)
+}
+
+// Add to registry
+registry := &interceptor.Registry{}
+registry.Add(generator)
+
+// Build interceptor
+i, err := registry.Build("peer-connection-1")
+if err != nil {
+    panic(err)
+}
+defer i.Close()
+```
+
+## ResponderInterceptor
+
+Buffers outgoing RTP packets and retransmits them when NACK feedback is received.
+
+### Factory
+
+```go
+type ResponderInterceptorFactory struct {
+    // contains filtered or unexported fields
+}
+```
+
+### Constructor
+
+```go
+func NewResponderInterceptor(opts ...ResponderOption) (*ResponderInterceptorFactory, error)
+```
+
+Creates a new NACK responder factory with the specified options.
+
+### Options
+
+#### ResponderSize
+
+```go
+func ResponderSize(size uint16) ResponderOption
+```
+
+Sets the size of the packet retransmission buffer.
+
+<ParamField path="size" type="uint16">
+  Buffer size. Must be one of: 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768. Default: 1024
+</ParamField>
+
+#### WithResponderLoggerFactory
+
+```go
+func WithResponderLoggerFactory(loggerFactory logging.LoggerFactory) ResponderOption
+```
+
+Sets a custom logger factory.
+
+#### ResponderStreamsFilter
+
+```go
+func ResponderStreamsFilter(filter func(info *interceptor.StreamInfo) bool) ResponderOption
+```
+
+Sets a filter to selectively enable NACK response for specific streams.
+
+### Usage Example
+
+```go
+import (
+    "github.com/pion/interceptor"
+    "github.com/pion/interceptor/pkg/nack"
+)
+
+// Create responder with custom buffer size
+responder, err := nack.NewResponderInterceptor(
+    nack.ResponderSize(2048),
+)
+if err != nil {
+    panic(err)
+}
+
+// Add to registry
+registry := &interceptor.Registry{}
+registry.Add(responder)
+```
+
+## Complete Example: Both Sides
+
+```go
+import (
+    "time"
+    "github.com/pion/interceptor"
+    "github.com/pion/interceptor/pkg/nack"
+    "github.com/pion/webrtc/v4"
+)
+
+func setupNACK() (*interceptor.Registry, error) {
+    registry := &interceptor.Registry{}
+    
+    // Generator: detects lost packets and requests retransmission
+    generator, err := nack.NewGeneratorInterceptor(
+        nack.GeneratorSize(512),
+        nack.GeneratorInterval(100 * time.Millisecond),
+    )
+    if err != nil {
+        return nil, err
+    }
+    registry.Add(generator)
+    
+    // Responder: retransmits packets when NACKed
+    responder, err := nack.NewResponderInterceptor(
+        nack.ResponderSize(1024),
+    )
+    if err != nil {
+        return nil, err
+    }
+    registry.Add(responder)
+    
+    return registry, nil
+}
+
+func createPeerConnection() (*webrtc.PeerConnection, error) {
+    m := &webrtc.MediaEngine{}
+    if err := m.RegisterDefaultCodecs(); err != nil {
+        return nil, err
+    }
+    
+    ir, err := setupNACK()
+    if err != nil {
+        return nil, err
+    }
+    
+    api := webrtc.NewAPI(
+        webrtc.WithMediaEngine(m),
+        webrtc.WithInterceptorRegistry(ir),
+    )
+    
+    return api.NewPeerConnection(webrtc.Configuration{})
+}
+```
+
+## Stream Filtering
+
+```go
+import "strings"
+
+// Only enable NACK for video streams
+videoFilter := func(info *interceptor.StreamInfo) bool {
+    return strings.HasPrefix(info.MimeType, "video/")
+}
+
+generator, _ := nack.NewGeneratorInterceptor(
+    nack.GeneratorStreamsFilter(videoFilter),
+)
+
+responder, _ := nack.NewResponderInterceptor(
+    nack.ResponderStreamsFilter(videoFilter),
+)
+```
+
+## How It Works
+
+### Generator Flow
+
+1. **Packet Reception**: Tracks sequence numbers of incoming RTP packets
+2. **Gap Detection**: Identifies missing sequence numbers in the stream
+3. **NACK Generation**: Periodically sends NACK feedback listing missing packets
+4. **Retry Logic**: Optionally limits retransmission requests per packet
+
+### Responder Flow
+
+1. **Packet Buffering**: Stores outgoing RTP packets in a circular buffer
+2. **NACK Reception**: Listens for NACK feedback on RTCP reader
+3. **Retransmission**: Resends requested packets from the buffer
+4. **Buffer Management**: Automatically discards old packets
+
+## Configuration Guidelines
+
+### Buffer Sizes
+
+- **Small buffer (64-256)**: Low latency, limited retransmission window
+- **Medium buffer (512-1024)**: Balanced approach, good for most use cases
+- **Large buffer (2048+)**: High latency scenarios, extensive retransmission support
+
+### NACK Interval
+
+- **Fast (50-100ms)**: Quick recovery, more RTCP overhead
+- **Normal (100-200ms)**: Balanced recovery and overhead
+- **Slow (200ms+)**: Low overhead, slower recovery
+
+### SkipLastN
+
+Set to 1-2 to avoid NACKing packets that may just be slightly delayed or reordered.
+
+## Performance Considerations
+
+- Generator maintains per-SSRC packet history
+- Responder buffers all outgoing packets
+- Memory usage scales with buffer size
+- NACK feedback sent at regular intervals (not per-packet)
+
+## See Also
+
+- [Report Package](/api/packages/report) - RTCP sender/receiver reports
+- [Stats Package](/api/packages/stats) - Packet loss statistics
+- [JitterBuffer Package](/api/packages/jitterbuffer) - Packet reordering
+
+## Reference
+
+For more details, see the [pkg.go.dev documentation](https://pkg.go.dev/github.com/pion/interceptor/pkg/nack).

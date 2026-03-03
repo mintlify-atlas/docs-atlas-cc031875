@@ -1,0 +1,386 @@
+---
+title: "JitterBuffer Package"
+description: "Smooth packet arrival and handle network jitter"
+---
+
+The `jitterbuffer` package provides an interceptor that buffers incoming RTP packets to smooth out network jitter and packet reordering, ensuring smoother playback.
+
+## Overview
+
+Network jitter causes packets to arrive at irregular intervals. A jitter buffer:
+- Buffers incoming packets for a short period
+- Reorders packets by sequence number
+- Smooths out arrival time variations
+- Provides consistent packet delivery timing
+
+## ReceiverInterceptor
+
+Buffers and reorders incoming RTP packets.
+
+### Factory
+
+```go
+type InterceptorFactory struct {
+    // contains filtered or unexported fields
+}
+```
+
+### Constructor
+
+```go
+func NewInterceptor(opts ...ReceiverInterceptorOption) (*InterceptorFactory, error)
+```
+
+Creates a new jitter buffer interceptor factory.
+
+### Options
+
+Currently, the jitter buffer uses default settings. Options interface available for future extensibility.
+
+### JitterBuffer Type
+
+```go
+type JitterBuffer struct {
+    // contains filtered or unexported fields
+}
+```
+
+#### Methods
+
+**Push**
+
+```go
+func (j *JitterBuffer) Push(pkt *rtp.Packet)
+```
+
+Adds a packet to the buffer.
+
+**Pop**
+
+```go
+func (j *JitterBuffer) Pop() (*rtp.Packet, error)
+```
+
+Retrieves the next packet in sequence.
+
+**Returns:**
+- `*rtp.Packet` - Next packet
+- `error` - `ErrPopWhileBuffering` if still buffering, `ErrBufferUnderrun` if buffer empty
+
+## Error Types
+
+```go
+var (
+    ErrPopWhileBuffering = errors.New("jitter buffer is buffering")
+    ErrBufferUnderrun    = errors.New("jitter buffer underrun")
+)
+```
+
+<ResponseField name="ErrPopWhileBuffering" type="error">
+  Buffer is still filling with initial packets. Retry later.
+</ResponseField>
+
+<ResponseField name="ErrBufferUnderrun" type="error">
+  Buffer is empty. Packets not arriving fast enough.
+</ResponseField>
+
+## Usage Example
+
+### Basic Setup
+
+```go
+import (
+    "github.com/pion/interceptor"
+    "github.com/pion/interceptor/pkg/jitterbuffer"
+)
+
+// Create jitter buffer interceptor
+jbFactory, err := jitterbuffer.NewInterceptor()
+if err != nil {
+    panic(err)
+}
+
+// Add to registry
+registry := &interceptor.Registry{}
+registry.Add(jbFactory)
+
+// Build interceptor
+i, err := registry.Build("peer-connection-1")
+if err != nil {
+    panic(err)
+}
+defer i.Close()
+```
+
+### Handling Errors
+
+```go
+import (
+    "errors"
+    "time"
+    "github.com/pion/interceptor/pkg/jitterbuffer"
+)
+
+func readWithJitterBuffer(reader interceptor.RTPReader) {
+    buf := make([]byte, 1500)
+    
+    for {
+        n, attr, err := reader.Read(buf, nil)
+        if err != nil {
+            if errors.Is(err, jitterbuffer.ErrPopWhileBuffering) {
+                // Buffer is still filling, wait and retry
+                time.Sleep(10 * time.Millisecond)
+                continue
+            }
+            if errors.Is(err, jitterbuffer.ErrBufferUnderrun) {
+                // No packets available, wait for more
+                time.Sleep(10 * time.Millisecond)
+                continue
+            }
+            // Other error
+            log.Printf("Read error: %v", err)
+            return
+        }
+        
+        // Process packet
+        processPacket(buf[:n], attr)
+    }
+}
+```
+
+### WebRTC Integration
+
+```go
+import (
+    "github.com/pion/interceptor"
+    "github.com/pion/interceptor/pkg/jitterbuffer"
+    "github.com/pion/webrtc/v4"
+)
+
+func setupJitterBuffer() (*webrtc.PeerConnection, error) {
+    m := &webrtc.MediaEngine{}
+    if err := m.RegisterDefaultCodecs(); err != nil {
+        return nil, err
+    }
+    
+    ir := &interceptor.Registry{}
+    
+    // Add jitter buffer
+    jb, _ := jitterbuffer.NewInterceptor()
+    ir.Add(jb)
+    
+    // Add other interceptors
+    if err := webrtc.RegisterDefaultInterceptors(m, ir); err != nil {
+        return nil, err
+    }
+    
+    api := webrtc.NewAPI(
+        webrtc.WithMediaEngine(m),
+        webrtc.WithInterceptorRegistry(ir),
+    )
+    
+    return api.NewPeerConnection(webrtc.Configuration{})
+}
+```
+
+## How It Works
+
+### Buffering Phase
+
+1. **Initial Packets**: Buffer fills with first N packets (default: 50)
+2. **State**: Returns `ErrPopWhileBuffering` during this phase
+3. **Transition**: Once buffer reaches threshold, transitions to emitting
+
+### Emitting Phase
+
+1. **Packet Pop**: Returns packets in sequence number order
+2. **Reordering**: Automatically handles out-of-order arrivals
+3. **Gap Handling**: Skips missing sequence numbers after timeout
+4. **Underrun**: Returns `ErrBufferUnderrun` if buffer empties
+
+### Priority Queue
+
+Internally uses a priority queue ordered by RTP sequence number:
+
+```go
+type priorityQueue []*rtp.Packet
+
+// Orders packets by sequence number handling wraparound
+func (pq priorityQueue) Less(i, j int) bool {
+    return isNewer(pq[j].SequenceNumber, pq[i].SequenceNumber)
+}
+```
+
+## Buffer Size
+
+Default buffer size: **50 packets**
+
+This provides:
+- ~1 second of buffering at 50 fps
+- ~625ms at 80 pps (20ms audio frames)
+- Trade-off between latency and jitter tolerance
+
+## Performance Characteristics
+
+### Latency
+
+- **Initial delay**: Time to fill buffer (~50 packets)
+- **Operating delay**: Minimal once emitting
+- **Total latency**: Typically 100-500ms depending on packet rate
+
+### Memory
+
+- Per stream: ~50 packets × ~1500 bytes = ~75 KB
+- Additional overhead for priority queue structure
+
+### CPU
+
+- Push: O(log n) for priority queue insertion
+- Pop: O(log n) for priority queue removal
+- Minimal overhead per packet
+
+## Use Cases
+
+### Audio Streaming
+
+```go
+// Jitter buffer is especially important for audio
+// to prevent crackling and dropouts
+jb, _ := jitterbuffer.NewInterceptor()
+registry.Add(jb)
+```
+
+### Video Streaming
+
+```go
+// For video, reordering is crucial to avoid
+// decoding errors from out-of-order packets
+jb, _ := jitterbuffer.NewInterceptor()
+registry.Add(jb)
+```
+
+### Network Conditions
+
+**High Jitter Networks** (WiFi, Mobile):
+- Jitter buffer essential
+- Smooths irregular arrivals
+- Prevents playback glitches
+
+**Low Latency Requirements**:
+- May want to reduce buffer size
+- Trade-off: lower latency vs jitter tolerance
+
+## Advanced Usage
+
+### Monitoring Buffer State
+
+While the interceptor doesn't expose buffer state directly, you can infer it from errors:
+
+```go
+type BufferMonitor struct {
+    bufferingCount int
+    underrunCount  int
+}
+
+func (m *BufferMonitor) Read(buf []byte, attr interceptor.Attributes) (int, interceptor.Attributes, error) {
+    n, a, err := reader.Read(buf, attr)
+    
+    if errors.Is(err, jitterbuffer.ErrPopWhileBuffering) {
+        m.bufferingCount++
+    }
+    if errors.Is(err, jitterbuffer.ErrBufferUnderrun) {
+        m.underrunCount++
+    }
+    
+    return n, a, err
+}
+```
+
+### Adaptive Retry Logic
+
+```go
+func readWithAdaptiveRetry(reader interceptor.RTPReader) (*rtp.Packet, error) {
+    buf := make([]byte, 1500)
+    retries := 0
+    maxRetries := 100
+    baseDelay := 5 * time.Millisecond
+    
+    for retries < maxRetries {
+        n, attr, err := reader.Read(buf, nil)
+        
+        if err == nil {
+            // Success, unmarshal packet
+            pkt := &rtp.Packet{}
+            if err := pkt.Unmarshal(buf[:n]); err != nil {
+                return nil, err
+            }
+            return pkt, nil
+        }
+        
+        if errors.Is(err, jitterbuffer.ErrPopWhileBuffering) {
+            // Initial buffering, wait longer
+            time.Sleep(baseDelay * 4)
+        } else if errors.Is(err, jitterbuffer.ErrBufferUnderrun) {
+            // Underrun, short wait
+            time.Sleep(baseDelay)
+        } else {
+            // Other error
+            return nil, err
+        }
+        
+        retries++
+    }
+    
+    return nil, fmt.Errorf("max retries exceeded")
+}
+```
+
+## Comparison with Other Approaches
+
+### No Jitter Buffer
+
+**Pros:**
+- Lowest latency
+- Simple
+
+**Cons:**
+- Out-of-order packets cause issues
+- Jitter causes playback problems
+- Poor quality on unreliable networks
+
+### With Jitter Buffer
+
+**Pros:**
+- Smooth playback
+- Handles reordering
+- Better quality on unreliable networks
+
+**Cons:**
+- Added latency (100-500ms)
+- Memory overhead
+- Complexity
+
+## Limitations
+
+- Fixed buffer size (50 packets)
+- No adaptive sizing based on network conditions
+- Single buffer shared across all streams
+- Cannot configure buffer depth
+
+## Future Enhancements
+
+Potential improvements:
+- Configurable buffer size
+- Adaptive buffer sizing
+- Per-stream buffers
+- Statistics export
+- Playout delay estimation
+
+## See Also
+
+- [NACK Package](/api/packages/nack) - Packet retransmission
+- [Stats Package](/api/packages/stats) - Jitter statistics
+
+## Reference
+
+For more details, see the [pkg.go.dev documentation](https://pkg.go.dev/github.com/pion/interceptor/pkg/jitterbuffer).

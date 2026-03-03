@@ -1,0 +1,189 @@
+---
+title: Architecture
+description: Understanding the overall architecture and design of the Pion Interceptor library
+---
+
+The Pion Interceptor library provides a pluggable architecture for processing RTP (Real-time Transport Protocol) and RTCP (RTP Control Protocol) packets in WebRTC applications. This design allows you to add custom functionality to peer connections by intercepting and modifying packets as they flow through your application.
+
+## Core design principles
+
+The interceptor architecture is built around several key principles:
+
+<CardGroup cols={2}>
+  <Card title="Composability" icon="layer-group">
+    Interceptors can be chained together to build complex processing pipelines from simple, focused components.
+  </Card>
+  
+  <Card title="Bidirectional processing" icon="arrows-left-right">
+    Support for both incoming and outgoing packet streams, with separate interfaces for RTP and RTCP protocols.
+  </Card>
+  
+  <Card title="Stream awareness" icon="stream">
+    Each interceptor receives context about the media stream it's processing through the StreamInfo type.
+  </Card>
+  
+  <Card title="Lifecycle management" icon="rotate">
+    Explicit bind and unbind hooks allow interceptors to manage resources tied to stream lifecycles.
+  </Card>
+</CardGroup>
+
+## Packet flow
+
+Packets flow through interceptors in a pipeline pattern:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    Application Layer                     │
+└──────────────────────┬──────────────────┬───────────────┘
+                       │                  │
+                  Outgoing            Incoming
+                       │                  │
+                       ▼                  ▼
+            ┌──────────────────┐  ┌──────────────────┐
+            │  Interceptor 1   │  │  Interceptor 1   │
+            │  BindLocalStream │  │ BindRemoteStream │
+            │  BindRTCPWriter  │  │  BindRTCPReader  │
+            └────────┬─────────┘  └────────┬─────────┘
+                     │                     │
+                     ▼                     ▼
+            ┌──────────────────┐  ┌──────────────────┐
+            │  Interceptor 2   │  │  Interceptor 2   │
+            └────────┬─────────┘  └────────┬─────────┘
+                     │                     │
+                     ▼                     ▼
+            ┌──────────────────┐  ┌──────────────────┐
+            │  Interceptor N   │  │  Interceptor N   │
+            └────────┬─────────┘  └────────┬─────────┘
+                     │                     │
+                     ▼                     ▼
+            ┌─────────────────────────────────────────┐
+            │          Network Transport              │
+            └─────────────────────────────────────────┘
+```
+
+## Component overview
+
+### Interceptor interface
+
+The central `Interceptor` interface defines methods for binding to different packet flows. See [Interceptor interface](/concepts/interceptor-interface) for details.
+
+### Chain
+
+The `Chain` type allows multiple interceptors to be composed into a single interceptor. It executes all child interceptors in order. See [Chaining interceptors](/concepts/chaining) for details.
+
+### Registry
+
+The `Registry` manages interceptor factories and builds complete interceptor chains. See [Registry](/concepts/registry) for details.
+
+### Supporting types
+
+- **StreamInfo**: Provides context about the media stream being processed
+- **Attributes**: A generic key-value store for passing metadata between interceptors
+- **Reader/Writer interfaces**: Abstract the packet I/O operations
+
+See [Attributes and StreamInfo](/concepts/attributes-streaminfo) for details.
+
+## Reader and Writer interfaces
+
+The library defines separate reader and writer interfaces for RTP and RTCP packets:
+
+<CodeGroup>
+```go RTP interfaces
+// RTPWriter is used by Interceptor.BindLocalStream.
+type RTPWriter interface {
+    // Write a rtp packet
+    Write(header *rtp.Header, payload []byte, attributes Attributes) (int, error)
+}
+
+// RTPReader is used by Interceptor.BindRemoteStream.
+type RTPReader interface {
+    // Read a rtp packet
+    Read([]byte, Attributes) (int, Attributes, error)
+}
+```
+
+```go RTCP interfaces
+// RTCPWriter is used by Interceptor.BindRTCPWriter.
+type RTCPWriter interface {
+    // Write a batch of rtcp packets
+    Write(pkts []rtcp.Packet, attributes Attributes) (int, error)
+}
+
+// RTCPReader is used by Interceptor.BindRTCPReader.
+type RTCPReader interface {
+    // Read a batch of rtcp packets
+    Read([]byte, Attributes) (int, Attributes, error)
+}
+```
+</CodeGroup>
+
+<Note>
+  RTP packets are processed individually, while RTCP packets are processed in batches. This reflects the typical usage patterns of these protocols.
+</Note>
+
+## Functional adapters
+
+For convenience, the library provides functional adapters that implement these interfaces:
+
+```go
+type RTPWriterFunc func(header *rtp.Header, payload []byte, attributes Attributes) (int, error)
+type RTPReaderFunc func([]byte, Attributes) (int, Attributes, error)
+type RTCPWriterFunc func(pkts []rtcp.Packet, attributes Attributes) (int, error)
+type RTCPReaderFunc func([]byte, Attributes) (int, Attributes, error)
+```
+
+These allow you to use functions directly where reader/writer interfaces are expected.
+
+## Factory pattern
+
+Interceptors are created through factories that implement the `Factory` interface:
+
+```go
+// Factory provides an interface for constructing interceptors.
+type Factory interface {
+    NewInterceptor(id string) (Interceptor, error)
+}
+```
+
+This pattern enables:
+- Lazy instantiation of interceptors
+- Per-connection interceptor instances
+- Configuration validation at creation time
+- Error handling during initialization
+
+<Tip>
+  The `id` parameter typically corresponds to a PeerConnection identifier, allowing interceptors to maintain per-connection state.
+</Tip>
+
+## Use cases
+
+The interceptor architecture supports a wide range of use cases:
+
+- **Statistics collection**: Monitor packet rates, bandwidth usage, and packet loss
+- **Quality of service**: Implement congestion control and bandwidth estimation
+- **Packet modification**: Add or modify RTP header extensions
+- **Protocol extensions**: Implement custom RTCP feedback mechanisms
+- **Recording**: Capture media streams for later playback
+- **Simulcast**: Manage multiple quality layers for adaptive streaming
+- **Encryption**: Add end-to-end encryption layers
+- **Testing**: Inject packet loss or delays for testing purposes
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Interceptor interface" icon="plug" href="/concepts/interceptor-interface">
+    Learn about the core Interceptor interface and lifecycle
+  </Card>
+  
+  <Card title="Chaining interceptors" icon="link" href="/concepts/chaining">
+    Compose multiple interceptors into processing pipelines
+  </Card>
+  
+  <Card title="Registry" icon="folder-tree" href="/concepts/registry">
+    Manage interceptor factories with the Registry
+  </Card>
+  
+  <Card title="Attributes and StreamInfo" icon="tags" href="/concepts/attributes-streaminfo">
+    Work with stream metadata and attributes
+  </Card>
+</CardGroup>

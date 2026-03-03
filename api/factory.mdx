@@ -1,0 +1,108 @@
+---
+title: "Factory"
+description: "Interface for constructing Interceptor instances"
+---
+
+The `Factory` interface provides a standardized way to construct interceptor instances with a unique identifier.
+
+## Interface Definition
+
+```go
+type Factory interface {
+    NewInterceptor(id string) (Interceptor, error)
+}
+```
+
+## Methods
+
+### NewInterceptor
+
+```go
+NewInterceptor(id string) (Interceptor, error)
+```
+
+Creates a new interceptor instance with the given identifier.
+
+<ParamField path="id" type="string">
+  Unique identifier for the interceptor instance (typically a PeerConnection ID)
+</ParamField>
+
+**Returns:**
+- `Interceptor` - The newly created interceptor instance
+- `error` - Any error that occurred during construction
+
+## Usage Example
+
+```go
+import (
+    "github.com/pion/interceptor"
+    "github.com/pion/interceptor/pkg/nack"
+)
+
+// Create a NACK generator factory
+factory, err := nack.NewGeneratorInterceptor(
+    nack.GeneratorSize(512),
+    nack.GeneratorInterval(100 * time.Millisecond),
+)
+if err != nil {
+    panic(err)
+}
+
+// Create an interceptor instance for a specific PeerConnection
+interceptor, err := factory.NewInterceptor("peer-connection-1")
+if err != nil {
+    panic(err)
+}
+defer interceptor.Close()
+```
+
+## Implementation Example
+
+```go
+import "github.com/pion/interceptor"
+
+type MyInterceptorFactory struct {
+    config MyConfig
+}
+
+func (f *MyInterceptorFactory) NewInterceptor(id string) (interceptor.Interceptor, error) {
+    return &MyInterceptor{
+        id:     id,
+        config: f.config,
+    }, nil
+}
+
+func NewMyInterceptor(config MyConfig) (*MyInterceptorFactory, error) {
+    return &MyInterceptorFactory{
+        config: config,
+    }, nil
+}
+```
+
+## Built-in Factory Implementations
+
+The following packages provide factory implementations:
+
+- **NACK**: `GeneratorInterceptorFactory`, `ResponderInterceptorFactory`
+- **Report**: `ReceiverInterceptorFactory`, `SenderInterceptorFactory`
+- **Stats**: `InterceptorFactory`
+- **TWCC**: `SenderInterceptorFactory`, `HeaderExtensionInterceptorFactory`
+- **GCC**: Uses `BandwidthEstimatorFactory` for creating bandwidth estimators
+- **JitterBuffer**: `InterceptorFactory`
+- **FlexFEC**: `FecInterceptorFactory`
+- **Interval PLI**: `ReceiverInterceptorFactory`
+- **PacketDump**: `ReceiverInterceptorFactory`, `SenderInterceptorFactory`
+- **RFC8888**: `SenderInterceptorFactory`
+- **RTPFB**: `InterceptorFactory`
+- **Pacing**: `InterceptorFactory`
+- **CC**: `InterceptorFactory`
+
+## See Also
+
+- [Interceptor](/api/interceptor) - The core interface that factories create
+- [Registry](/api/registry) - Collector for multiple interceptor factories
+- [Chain](/api/chain) - Combining multiple interceptors
+
+## Reference
+
+For more details, see the [pkg.go.dev documentation](https://pkg.go.dev/github.com/pion/interceptor#Factory).

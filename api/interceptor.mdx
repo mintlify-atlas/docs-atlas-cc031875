@@ -1,0 +1,196 @@
+---
+title: "Interceptor"
+description: "Core interface for modifying RTP/RTCP packets in the Pion Interceptor library"
+---
+
+The `Interceptor` interface is the foundation of the Pion Interceptor library. It allows you to add functionality to PeerConnections by modifying incoming/outgoing RTP/RTCP packets or sending your own packets as needed.
+
+## Interface Definition
+
+```go
+type Interceptor interface {
+    BindRTCPReader(reader RTCPReader) RTCPReader
+    BindRTCPWriter(writer RTCPWriter) RTCPWriter
+    BindLocalStream(info *StreamInfo, writer RTPWriter) RTPWriter
+    UnbindLocalStream(info *StreamInfo)
+    BindRemoteStream(info *StreamInfo, reader RTPReader) RTPReader
+    UnbindRemoteStream(info *StreamInfo)
+    io.Closer
+}
+```
+
+## Methods
+
+### BindRTCPReader
+
+```go
+BindRTCPReader(reader RTCPReader) RTCPReader
+```
+
+Modifies any incoming RTCP packets. Called once per sender/receiver (though this might change in the future). The returned method will be called once per packet batch.
+
+<ParamField path="reader" type="RTCPReader">
+  The RTCP reader to wrap
+</ParamField>
+
+**Returns:** `RTCPReader` - A wrapped reader that can modify packets
+
+### BindRTCPWriter
+
+```go
+BindRTCPWriter(writer RTCPWriter) RTCPWriter
+```
+
+Modifies any outgoing RTCP packets. Called once per PeerConnection. The returned method will be called once per packet batch.
+
+<ParamField path="writer" type="RTCPWriter">
+  The RTCP writer to wrap
+</ParamField>
+
+**Returns:** `RTCPWriter` - A wrapped writer that can modify packets
+
+### BindLocalStream
+
+```go
+BindLocalStream(info *StreamInfo, writer RTPWriter) RTPWriter
+```
+
+Modifies any outgoing RTP packets. Called once per LocalStream. The returned method will be called once per RTP packet.
+
+<ParamField path="info" type="*StreamInfo">
+  Information about the stream being bound
+</ParamField>
+
+<ParamField path="writer" type="RTPWriter">
+  The RTP writer to wrap
+</ParamField>
+
+**Returns:** `RTPWriter` - A wrapped writer that can modify packets
+
+### UnbindLocalStream
+
+```go
+UnbindLocalStream(info *StreamInfo)
+```
+
+Called when a local stream is removed. Use this to clean up any data related to that track.
+
+<ParamField path="info" type="*StreamInfo">
+  Information about the stream being unbound
+</ParamField>
+
+### BindRemoteStream
+
+```go
+BindRemoteStream(info *StreamInfo, reader RTPReader) RTPReader
+```
+
+Modifies any incoming RTP packets. Called once per RemoteStream. The returned method will be called once per RTP packet.
+
+<ParamField path="info" type="*StreamInfo">
+  Information about the stream being bound
+</ParamField>
+
+<ParamField path="reader" type="RTPReader">
+  The RTP reader to wrap
+</ParamField>
+
+**Returns:** `RTPReader` - A wrapped reader that can modify packets
+
+### UnbindRemoteStream
+
+```go
+UnbindRemoteStream(info *StreamInfo)
+```
+
+Called when a remote stream is removed. Use this to clean up any data related to that track.
+
+<ParamField path="info" type="*StreamInfo">
+  Information about the stream being unbound
+</ParamField>
+
+### Close
+
+```go
+Close() error
+```
+
+Closes the interceptor, cleaning up any data if necessary.
+
+**Returns:** `error` - Any error that occurred during cleanup
+
+## Related Types
+
+### RTPWriter
+
+```go
+type RTPWriter interface {
+    Write(header *rtp.Header, payload []byte, attributes Attributes) (int, error)
+}
+```
+
+### RTPReader
+
+```go
+type RTPReader interface {
+    Read([]byte, Attributes) (int, Attributes, error)
+}
+```
+
+### RTCPWriter
+
+```go
+type RTCPWriter interface {
+    Write(pkts []rtcp.Packet, attributes Attributes) (int, error)
+}
+```
+
+### RTCPReader
+
+```go
+type RTCPReader interface {
+    Read([]byte, Attributes) (int, Attributes, error)
+}
+```
+
+## Usage Example
+
+```go
+import (
+    "github.com/pion/interceptor"
+    "github.com/pion/rtp"
+)
+
+// Custom interceptor that logs RTP packets
+type LoggingInterceptor struct {
+    interceptor.NoOp
+}
+
+func (i *LoggingInterceptor) BindRemoteStream(
+    info *interceptor.StreamInfo,
+    reader interceptor.RTPReader,
+) interceptor.RTPReader {
+    return interceptor.RTPReaderFunc(func(b []byte, a interceptor.Attributes) (int, interceptor.Attributes, error) {
+        n, attr, err := reader.Read(b, a)
+        if err != nil {
+            return 0, nil, err
+        }
+        
+        // Log packet info
+        fmt.Printf("Received RTP packet of %d bytes\n", n)
+        
+        return n, attr, nil
+    })
+}
+```
+
+## See Also
+
+- [Factory](/api/factory) - Interface for constructing interceptors
+- [Chain](/api/chain) - Run multiple interceptors in sequence
+- [NoOp](/api/noop) - Base implementation for easy interceptor creation
+- [StreamInfo](/api/streaminfo) - Stream metadata
+
+## Reference
+
+For more details, see the [pkg.go.dev documentation](https://pkg.go.dev/github.com/pion/interceptor).

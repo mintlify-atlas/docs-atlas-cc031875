@@ -1,0 +1,391 @@
+---
+title: "GCC Package"
+description: "Google Congestion Control for bandwidth estimation"
+---
+
+The `gcc` package implements Google Congestion Control (GCC), a bandwidth estimation algorithm that combines loss-based and delay-based congestion control.
+
+## Overview
+
+GCC dynamically adjusts the sending bitrate based on:
+- **Packet loss**: Reduces bitrate when packets are lost
+- **Delay variation**: Adjusts bitrate based on one-way delay changes
+- **Arrival time feedback**: Uses TWCC or RFC 8888 feedback reports
+
+## SendSideBWE
+
+The core bandwidth estimator that implements the GCC algorithm.
+
+### Type Definition
+
+```go
+type SendSideBWE struct {
+    // contains filtered or unexported fields
+}
+```
+
+### Constructor
+
+```go
+func NewSendSideBWE(opts ...Option) (*SendSideBWE, error)
+```
+
+Creates a new send-side bandwidth estimator.
+
+### Options
+
+#### SendSideBWEInitialBitrate
+
+```go
+func SendSideBWEInitialBitrate(rate int) Option
+```
+
+Sets the initial bitrate in bits per second.
+
+<ParamField path="rate" type="int">
+  Initial bitrate in bps. Default: 10,000 bps
+</ParamField>
+
+#### SendSideBWEMinBitrate
+
+```go
+func SendSideBWEMinBitrate(rate int) Option
+```
+
+Sets the minimum allowed bitrate.
+
+<ParamField path="rate" type="int">
+  Minimum bitrate in bps. Default: 5,000 bps
+</ParamField>
+
+#### SendSideBWEMaxBitrate
+
+```go
+func SendSideBWEMaxBitrate(rate int) Option
+```
+
+Sets the maximum allowed bitrate.
+
+<ParamField path="rate" type="int">
+  Maximum bitrate in bps. Default: 50,000,000 bps (50 Mbps)
+</ParamField>
+
+#### SendSideBWEPacer
+
+```go
+func SendSideBWEPacer(p Pacer) Option
+```
+
+Sets a custom packet pacer.
+
+<ParamField path="p" type="Pacer">
+  Custom pacer implementation
+</ParamField>
+
+#### WithLoggerFactory
+
+```go
+func WithLoggerFactory(factory logging.LoggerFactory) Option
+```
+
+Sets a custom logger factory.
+
+### Methods
+
+#### AddStream
+
+```go
+func (e *SendSideBWE) AddStream(
+    info *interceptor.StreamInfo,
+    writer interceptor.RTPWriter,
+) interceptor.RTPWriter
+```
+
+Adds a new RTP stream to the bandwidth estimator.
+
+<ParamField path="info" type="*interceptor.StreamInfo">
+  Stream metadata
+</ParamField>
+
+<ParamField path="writer" type="interceptor.RTPWriter">
+  RTP writer for the stream
+</ParamField>
+
+**Returns:** `interceptor.RTPWriter` - Wrapped writer that applies pacing
+
+#### WriteRTCP
+
+```go
+func (e *SendSideBWE) WriteRTCP(
+    pkts []rtcp.Packet,
+    attr interceptor.Attributes,
+) error
+```
+
+Processes RTCP feedback (TWCC or RFC 8888) to update bandwidth estimate.
+
+<ParamField path="pkts" type="[]rtcp.Packet">
+  RTCP packets containing congestion feedback
+</ParamField>
+
+<ParamField path="attr" type="interceptor.Attributes">
+  Packet attributes
+</ParamField>
+
+#### GetTargetBitrate
+
+```go
+func (e *SendSideBWE) GetTargetBitrate() int
+```
+
+**Returns:** `int` - Current target bitrate in bits per second
+
+#### OnTargetBitrateChange
+
+```go
+func (e *SendSideBWE) OnTargetBitrateChange(f func(bitrate int))
+```
+
+Sets a callback that is invoked whenever the target bitrate changes.
+
+<ParamField path="f" type="func(bitrate int)">
+  Callback function receiving the new bitrate in bps
+</ParamField>
+
+#### GetStats
+
+```go
+func (e *SendSideBWE) GetStats() map[string]any
+```
+
+**Returns:** `map[string]any` - Internal statistics
+
+**Statistics keys:**
+- `lossTargetBitrate`: Loss-based estimate (bps)
+- `averageLoss`: Average packet loss ratio
+- `delayTargetBitrate`: Delay-based estimate (bps)
+- `delayMeasurement`: Current delay measurement (ms)
+- `delayEstimate`: Estimated one-way delay (ms)
+- `delayThreshold`: Delay increase threshold (ms)
+- `usage`: Network usage state ("over", "normal", "under")
+- `state`: Controller state ("increase", "hold", "decrease")
+
+#### Close
+
+```go
+func (e *SendSideBWE) Close() error
+```
+
+Closes the bandwidth estimator.
+
+## Pacer Interface
+
+```go
+type Pacer interface {
+    interceptor.RTPWriter
+    AddStream(ssrc uint32, writer interceptor.RTPWriter)
+    SetTargetBitrate(int)
+    Close() error
+}
+```
+
+## Stats Type
+
+```go
+type Stats struct {
+    LossStats
+    DelayStats
+}
+
+type LossStats struct {
+    TargetBitrate int
+    AverageLoss   float64
+}
+
+type DelayStats struct {
+    TargetBitrate int
+    Measurement   time.Duration
+    Estimate      time.Duration
+    Threshold     time.Duration
+    Usage         Usage
+    State         State
+}
+```
+
+## Usage Example
+
+### Basic Setup
+
+```go
+import (
+    "fmt"
+    "github.com/pion/interceptor/pkg/gcc"
+    "github.com/pion/interceptor"
+)
+
+// Create bandwidth estimator
+bwe, err := gcc.NewSendSideBWE(
+    gcc.SendSideBWEInitialBitrate(1_000_000),  // 1 Mbps
+    gcc.SendSideBWEMinBitrate(100_000),        // 100 Kbps
+    gcc.SendSideBWEMaxBitrate(5_000_000),      // 5 Mbps
+)
+if err != nil {
+    panic(err)
+}
+defer bwe.Close()
+
+// Monitor bitrate changes
+bwe.OnTargetBitrateChange(func(bitrate int) {
+    fmt.Printf("Target bitrate changed to %d bps\n", bitrate)
+})
+
+// Add streams
+writer := bwe.AddStream(streamInfo, rtpWriter)
+
+// Process RTCP feedback
+err = bwe.WriteRTCP(rtcpPackets, nil)
+```
+
+### With CC Interceptor
+
+```go
+import (
+    "github.com/pion/interceptor"
+    "github.com/pion/interceptor/pkg/cc"
+    "github.com/pion/interceptor/pkg/gcc"
+)
+
+// Create GCC factory
+gccFactory := func() (cc.BandwidthEstimator, error) {
+    return gcc.NewSendSideBWE(
+        gcc.SendSideBWEInitialBitrate(2_000_000),
+        gcc.SendSideBWEMaxBitrate(10_000_000),
+    )
+}
+
+// Create CC interceptor with GCC
+ccFactory, err := cc.NewInterceptor(gccFactory)
+if err != nil {
+    panic(err)
+}
+
+// Get notified of new estimators
+ccFactory.OnNewPeerConnection(func(id string, estimator cc.BandwidthEstimator) {
+    fmt.Printf("New BWE for peer %s\n", id)
+    
+    // Monitor bitrate changes
+    estimator.OnTargetBitrateChange(func(bitrate int) {
+        fmt.Printf("Peer %s bitrate: %d bps\n", id, bitrate)
+    })
+})
+
+// Add to registry
+registry := &interceptor.Registry{}
+registry.Add(ccFactory)
+```
+
+### Monitoring Statistics
+
+```go
+import "time"
+
+bwe, _ := gcc.NewSendSideBWE()
+
+// Periodically log statistics
+go func() {
+    ticker := time.NewTicker(5 * time.Second)
+    defer ticker.Stop()
+    
+    for range ticker.C {
+        stats := bwe.GetStats()
+        fmt.Printf("Loss bitrate: %v bps\n", stats["lossTargetBitrate"])
+        fmt.Printf("Delay bitrate: %v bps\n", stats["delayTargetBitrate"])
+        fmt.Printf("Average loss: %.2f%%\n", stats["averageLoss"].(float64)*100)
+        fmt.Printf("Network usage: %v\n", stats["usage"])
+        fmt.Printf("State: %v\n", stats["state"])
+    }
+}()
+```
+
+### Custom Pacer
+
+```go
+import "github.com/pion/interceptor/pkg/pacing"
+
+// Create custom pacer
+pacerFactory := pacing.NewInterceptor(
+    pacing.InitialRate(1_000_000),
+    pacing.Interval(10 * time.Millisecond),
+)
+
+pacer, _ := pacerFactory.NewInterceptor("peer-1")
+
+// Use with GCC
+bwe, _ := gcc.NewSendSideBWE(
+    gcc.SendSideBWEPacer(pacer.(gcc.Pacer)),
+)
+```
+
+## Algorithm Details
+
+### Loss-Based Control
+
+- Monitors packet loss rate from RTCP feedback
+- Reduces bitrate multiplicatively on loss
+- Increases bitrate additively when no loss
+
+### Delay-Based Control
+
+- Tracks one-way delay changes using arrival timestamps
+- Detects network congestion before packet loss occurs
+- Three states:
+  - **Over-using**: Delay increasing, reduce bitrate
+  - **Normal**: Stable delay
+  - **Under-using**: Can increase bitrate
+
+### Combined Estimate
+
+The final target bitrate is the minimum of:
+- Loss-based estimate
+- Delay-based estimate
+
+This ensures conservative behavior that responds to both loss and delay.
+
+## Feedback Requirements
+
+GCC requires arrival time feedback via:
+- **TWCC (Transport-Wide Congestion Control)**: RFC draft-holmer-rmcat-transport-wide-cc
+- **RFC 8888**: RTP Control Protocol (RTCP) Congestion Control Feedback
+
+See [TWCC Package](/api/packages/twcc) and [RFC8888 Package](/api/packages/rfc8888).
+
+## Performance Tuning
+
+### Initial Bitrate
+
+Set based on expected network conditions:
+- Low bandwidth: 100-500 Kbps
+- Medium bandwidth: 500 Kbps - 2 Mbps
+- High bandwidth: 2-5 Mbps
+
+### Min/Max Bitrate
+
+- **Min**: Lowest acceptable quality
+- **Max**: Prevent over-utilization or respect quotas
+
+### Responsiveness
+
+GCC adapts gradually:
+- Increases: ~8% per RTT when under-using
+- Decreases: 15% on congestion signal
+
+## See Also
+
+- [CC Package](/api/packages/cc) - Congestion control interceptor framework
+- [TWCC Package](/api/packages/twcc) - Transport-wide congestion control feedback
+- [Pacing Package](/api/packages/pacing) - Packet pacing
+- [RFC8888 Package](/api/packages/rfc8888) - Alternative feedback format
+
+## Reference
+
+For more details, see the [pkg.go.dev documentation](https://pkg.go.dev/github.com/pion/interceptor/pkg/gcc).
