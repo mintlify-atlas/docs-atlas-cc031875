@@ -1,0 +1,140 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "Pion Interceptor",
+  "projectDescription": "Pluggable RTP/RTCP processors for building real-time communication software",
+  "theme": "palm",
+  "primaryColor": "#0078D4",
+  "lightColor": null,
+  "darkColor": null,
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "installation",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/architecture",
+              "concepts/interceptor-interface",
+              "concepts/chaining",
+              "concepts/registry",
+              "concepts/attributes-streaminfo"
+            ]
+          },
+          {
+            "group": "Built-in Interceptors",
+            "pages": [
+              "interceptors/overview",
+              "interceptors/nack",
+              "interceptors/gcc",
+              "interceptors/twcc",
+              "interceptors/report",
+              "interceptors/stats",
+              "interceptors/jitterbuffer",
+              "interceptors/flexfec",
+              "interceptors/intervalpli",
+              "interceptors/packetdump",
+              "interceptors/rfc8888",
+              "interceptors/pacing"
+            ]
+          },
+          {
+            "group": "Advanced",
+            "pages": [
+              "advanced/custom-interceptors",
+              "advanced/examples",
+              "advanced/best-practices"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Core API",
+            "pages": [
+              "api/interceptor",
+              "api/factory",
+              "api/chain",
+              "api/registry",
+              "api/noop",
+              "api/attributes",
+              "api/streaminfo"
+            ]
+          },
+          {
+            "group": "Interceptor Packages",
+            "pages": [
+              "api/packages/nack",
+              "api/packages/gcc",
+              "api/packages/twcc",
+              "api/packages/report",
+              "api/packages/stats",
+              "api/packages/jitterbuffer",
+              "api/packages/flexfec",
+              "api/packages/intervalpli",
+              "api/packages/packetdump",
+              "api/packages/rfc8888",
+              "api/packages/rtpfb",
+              "api/packages/pacing",
+              "api/packages/cc"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Pluggable RTP/RTCP packet processing framework",
+    "Sequential interceptor chaining",
+    "NACK generator and responder for packet loss recovery",
+    "Google Congestion Control (GCC) for bandwidth estimation",
+    "Transport-wide congestion control (TWCC) feedback",
+    "Sender and receiver RTCP reports",
+    "WebRTC-compliant statistics generation",
+    "Jitter buffer for packet reordering",
+    "FlexFEC forward error correction",
+    "Packet dumping for debugging",
+    "RFC 8888 congestion control feedback",
+    "Interval PLI generation"
+  ],
+  "publicApiSurface": [
+    "Interceptor interface",
+    "Factory interface",
+    "Chain type",
+    "NoOp type",
+    "Registry type",
+    "Attributes type",
+    "StreamInfo type",
+    "RTPWriter interface",
+    "RTPReader interface",
+    "RTCPWriter interface",
+    "RTCPReader interface",
+    "pkg/nack.GeneratorInterceptor",
+    "pkg/nack.ResponderInterceptor",
+    "pkg/gcc.SendSideBWE",
+    "pkg/twcc.HeaderExtensionInterceptor",
+    "pkg/twcc.SenderInterceptor",
+    "pkg/report.ReceiverInterceptor",
+    "pkg/report.SenderInterceptor",
+    "pkg/stats.StatsInterceptor",
+    "pkg/jitterbuffer.ReceiverInterceptor",
+    "pkg/flexfec.EncoderInterceptor",
+    "pkg/intervalpli.GeneratorInterceptor",
+    "pkg/packetdump.ReceiverInterceptor",
+    "pkg/packetdump.SenderInterceptor",
+    "pkg/rfc8888.Interceptor",
+    "pkg/rtpfb.Interceptor",
+    "pkg/pacing.Interceptor",
+    "pkg/cc.Interceptor"
+  ]
+}
